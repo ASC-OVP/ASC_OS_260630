@@ -1,8 +1,7 @@
-import { NextResponse } from "next/server";
 import { createClassGroupFromFormData } from "@/features/classes/actions/classActions";
 
-function redirectTo(path: string, request: Request) {
-  return NextResponse.redirect(new URL(path, request.url), { status: 303 });
+function redirectTo(path: string) {
+  return new Response(null, { status: 303, headers: { Location: path } });
 }
 
 function classGroupCreateErrorParam(error: unknown) {
@@ -22,10 +21,10 @@ export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const createdClassGroupId = await createClassGroupFromFormData(formData);
-    return redirectTo(createdClassGroupId ? `/classes?classGroupId=${createdClassGroupId}` : "/classes", request);
+    return redirectTo(createdClassGroupId ? `/classes?classGroupId=${createdClassGroupId}` : "/classes");
   } catch (error) {
     const errorParam = classGroupCreateErrorParam(error);
-    if (errorParam) return redirectTo(`/classes/new?error=${errorParam}`, request);
+    if (errorParam) return redirectTo(`/classes/new?error=${errorParam}`);
     throw error;
   }
 }

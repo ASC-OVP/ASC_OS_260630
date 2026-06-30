@@ -191,6 +191,8 @@ model ClassGroup {
   room        String?
   schedule    String?
   description String?
+  iconText    String?
+  iconColor   String?
   status      ClassGroupStatus @default(ACTIVE)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt

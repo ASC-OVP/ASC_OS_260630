@@ -39,6 +39,8 @@ export async function createClassGroupFromFormData(formData: FormData) {
   const endTime = nullableText(formData, "endTime");
   const room = nullableText(formData, "room");
   const schedule = nullableText(formData, "schedule") ?? compactSchedule(daysOfWeek, startTime, endTime);
+  const iconText = cleanIconText(nullableText(formData, "iconText"));
+  const iconColor = cleanIconColor(nullableText(formData, "iconColor"));
   const assistantIds = classAssistantIds(formData);
   const assistantId = assistantIds[0] ?? null;
   const status = enumValue(text(formData, "status"), CLASS_GROUP_STATUSES, ClassGroupStatus.ACTIVE);
@@ -64,10 +66,10 @@ export async function createClassGroupFromFormData(formData: FormData) {
   await prisma.$transaction(async (tx) => {
     const classGroup = await tx.classGroup.create({
       data: {
-        academyId: user.academyId,
+        academy: { connect: { id: user.academyId } },
         name,
-        teacherId,
-        assistantId,
+        ...(teacherId ? { teacher: { connect: { id: teacherId } } } : {}),
+        ...(assistantId ? { assistant: { connect: { id: assistantId } } } : {}),
         subject,
         grade,
         startDate,
@@ -76,6 +78,8 @@ export async function createClassGroupFromFormData(formData: FormData) {
         startTime,
         endTime,
         schedule,
+        iconText,
+        iconColor,
         status,
         description,
       },
@@ -116,6 +120,8 @@ export async function updateClassGroupAction(formData: FormData) {
   const endTime = nullableText(formData, "endTime");
   const room = nullableText(formData, "room");
   const schedule = nullableText(formData, "schedule") ?? compactSchedule(daysOfWeek, startTime, endTime);
+  const iconText = cleanIconText(nullableText(formData, "iconText"));
+  const iconColor = cleanIconColor(nullableText(formData, "iconColor"));
   const assistantIds = classAssistantIds(formData);
   const assistantId = assistantIds[0] ?? null;
   const status = enumValue(text(formData, "status"), CLASS_GROUP_STATUSES, ClassGroupStatus.ACTIVE);
@@ -145,8 +151,8 @@ export async function updateClassGroupAction(formData: FormData) {
       where: { id },
       data: {
         name,
-        teacherId,
-        assistantId,
+        teacher: teacherId ? { connect: { id: teacherId } } : { disconnect: true },
+        assistant: assistantId ? { connect: { id: assistantId } } : { disconnect: true },
         subject,
         grade,
         startDate,
@@ -155,6 +161,8 @@ export async function updateClassGroupAction(formData: FormData) {
         startTime,
         endTime,
         schedule,
+        iconText,
+        iconColor,
         status,
         description,
       },
@@ -312,6 +320,18 @@ function classAssistantIds(formData: FormData) {
 
 function enumValue<T extends string>(value: string, values: readonly T[], fallback: T) {
   return values.includes(value as T) ? (value as T) : fallback;
+}
+
+function cleanIconText(value: string | null) {
+  if (!value) return null;
+  const iconText = value.trim().slice(0, 3);
+  return iconText.length > 0 ? iconText : null;
+}
+
+function cleanIconColor(value: string | null) {
+  if (!value) return null;
+  const iconColor = value.trim();
+  return /^#[0-9a-fA-F]{6}$/.test(iconColor) ? iconColor : null;
 }
 
 async function validateAssistantIds(academyId: string, assistantIds: string[]) {

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { ButtonLink } from "@/components/ui";
+import ClassCreateModal from "@/features/classes/components/ClassCreateModal";
 import ClassOpenRow from "@/features/classes/components/ClassOpenRow";
 import { buildClassStats } from "@/lib/classGroupStats";
 import {
@@ -19,16 +20,9 @@ import { ClassGroupStatus } from "@/lib/generated/prisma";
 export const dynamic = "force-dynamic";
 
 type Props = {
-  searchParams?: Promise<{
-    q?: string;
-    grade?: string;
-    subject?: string;
-    teacherId?: string;
-    status?: string;
-  }>;
+  searchParams?: Promise<{ view?: string }>;
 };
 
-type ClassFilters = { q: string; grade: string; subject: string; teacherId: string; status: string };
 type StudentInClass = {
   id: string;
   name: string;
@@ -50,6 +44,8 @@ type ClassGroupView = {
   endTime: string | null;
   schedule: string | null;
   status: ClassGroupStatus;
+  iconText: string | null;
+  iconColor: string | null;
   teacher: { id: string; name: string } | null;
   assistant: { id: string; name: string } | null;
   classAssistants: Array<{ assistantId: string; assistant: { id: string; name: string } }>;
@@ -66,13 +62,6 @@ type ClassRow = {
 export default async function ClassesPage({ searchParams }: Props) {
   const user = await requireUser();
   const sp = (await searchParams) ?? {};
-  const filters: ClassFilters = {
-    q: sp.q?.trim() ?? "",
-    grade: sp.grade || "all",
-    subject: sp.subject || "all",
-    teacherId: sp.teacherId || "all",
-    status: sp.status || "all",
-  };
   const canManage = canManageClassGroups(user.role);
   const since = daysAgo(120);
   const today = todayKoreaDate();
@@ -127,6 +116,7 @@ export default async function ClassesPage({ searchParams }: Props) {
   ]);
 
   const teachers = staff.filter((member) => member.role === "ADMIN" || member.role === "MANAGER" || member.role === "TEACHER");
+  const assistants = staff.filter((member) => member.role === "ASSISTANT");
   const rows: ClassRow[] = classGroups
     .map((classGroup) => {
       const students = classGroup.studentClasses.map((membership) => membership.student);
@@ -139,13 +129,14 @@ export default async function ClassesPage({ searchParams }: Props) {
     })
     .sort((a, b) => classStatusRank(a.effectiveStatus) - classStatusRank(b.effectiveStatus) || a.classGroup.name.localeCompare(b.classGroup.name, "ko"));
 
-  const displayRows = rows.filter((row) => matchesFilters(row, filters));
+  const operatingRows = rows.filter((row) => row.effectiveStatus !== "ENDED");
+  const endedRows = rows.filter((row) => row.effectiveStatus === "ENDED");
+  const activeView = sp.view === "ended" ? "ended" : "operating";
+  const visibleRows = activeView === "ended" ? endedRows : operatingRows;
   const totalStudents = rows.reduce((sum, row) => sum + row.stats.studentCount, 0);
-  const activeCount = rows.filter((row) => row.effectiveStatus === "ACTIVE").length;
+  const activeCount = operatingRows.length;
   const averageScore = average(rows.map((row) => row.stats.averageScore).filter((score): score is number => score !== null));
   const averageAttendance = average(rows.map((row) => row.stats.attendanceRate).filter((rate): rate is number => rate !== null));
-  const gradeOptions = unique(rows.map((row) => row.classGroup.grade));
-  const subjectOptions = unique(rows.map((row) => row.classGroup.subject));
 
   return (
     <main style={page}>
@@ -168,94 +159,27 @@ export default async function ClassesPage({ searchParams }: Props) {
             </div>
             <div className="asc-action-group" style={headerActions}>
               <ButtonLink href="/students" variant="tertiary" size="sm">학생 현황판</ButtonLink>
-              {canManage && <ButtonLink href="/classes/new" size="sm">반 추가</ButtonLink>}
+              {canManage && (
+                <ClassCreateModal
+                  teachers={teachers}
+                  assistants={assistants}
+                  currentUserId={user.id}
+                  currentUserRole={user.role}
+                />
+              )}
             </div>
           </div>
         </div>
 
-
-        <form className="asc-filter-bar" style={filterBar}>
-          <input name="q" defaultValue={filters.q} placeholder="반 이름, 과목, 강사 검색" style={filterInput} />
-          <select name="grade" defaultValue={filters.grade} style={filterSelect} aria-label="학년 필터">
-            <option value="all">전체 학년</option>
-            {gradeOptions.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
-          </select>
-          <select name="subject" defaultValue={filters.subject} style={filterSelect} aria-label="과목 필터">
-            <option value="all">전체 과목</option>
-            {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
-          </select>
-          <select name="teacherId" defaultValue={filters.teacherId} style={filterSelect} aria-label="담당 강사 필터">
-            <option value="all">전체 강사</option>
-            {teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}
-          </select>
-          <select name="status" defaultValue={filters.status} style={filterSelect} aria-label="상태 필터">
-            <option value="all">전체 상태</option>
-            <option value="ACTIVE">운영중</option>
-            <option value="UPCOMING">운영 예정</option>
-            <option value="PAUSED">휴강</option>
-            <option value="ENDED">종료</option>
-          </select>
-          <button style={filterButton}>적용</button>
-          <Link href="/classes" style={resetButton}>초기화</Link>
-          <span style={filterCount}>{displayRows.length}개 반</span>
-        </form>
-
-        <section style={listPanel}>
-          <div style={panelHead}>
-            <div>
-              <h2 style={sectionTitle}>반 목록</h2>
-              <p style={muted}>행을 더블클릭하거나 Enter를 누르면 반 상세 화면으로 이동합니다.</p>
-            </div>
-          </div>
-          {displayRows.length > 0 ? (
-            <div style={tableWrap}>
-              <table style={classTable}>
-                <thead>
-                  <tr>
-                    <th style={th}>반</th>
-                    <th style={th}>상태</th>
-                    <th style={th}>담당 강사</th>
-                    <th style={th}>담당 조교</th>
-                    <th style={{ ...th, textAlign: "right" }}>학생</th>
-                    <th style={th}>요일/시간</th>
-                    <th style={th}>최근/다음 차시</th>
-                    <th style={{ ...th, textAlign: "right" }}>평균</th>
-                    <th style={{ ...th, textAlign: "right" }}>출석률</th>
-                    <th style={{ ...th, textAlign: "right" }}>과제율</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayRows.map((row) => {
-                    const { classGroup, stats, effectiveStatus, lessonSignal } = row;
-                    return (
-                      <ClassOpenRow
-                        key={classGroup.id}
-                        href={`/classes/${classGroup.id}`}
-                        name={classGroup.name}
-                        meta={`${classGroup.subject || "과목 미지정"} / ${classGroup.grade || "학년 미지정"}`}
-                        statusLabel={classStatusLabel(effectiveStatus)}
-                        statusTone={classStatusTone(effectiveStatus)}
-                        teacherName={classGroup.teacher?.name ?? "-"}
-                        assistantName={assistantNames(classGroup)}
-                        studentCount={stats.studentCount}
-                        schedule={formatClassSchedule(classGroup)}
-                        latestLabel={lessonSignal.label}
-                        latestValue={lessonSignal.value}
-                        averageScore={stats.averageScore === null ? "-" : `${stats.averageScore}점`}
-                        attendanceRate={stats.attendanceRate === null ? "-" : `${stats.attendanceRate}%`}
-                        assignmentRate={stats.assignmentCompletionRate === null ? "-" : `${stats.assignmentCompletionRate}%`}
-                      />
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : rows.length === 0 ? (
-            <Empty title="아직 등록된 반이 없습니다" body="상단의 반 추가 버튼으로 첫 반을 만들어 주세요." />
-          ) : (
-            <Empty title="검색 결과가 없습니다" body="필터를 줄이거나 검색어를 바꿔 다시 확인해 주세요." />
-          )}
-        </section>
+        <ClassTableSection
+          activeView={activeView}
+          operatingCount={operatingRows.length}
+          endedCount={endedRows.length}
+          rows={visibleRows}
+          canManage={canManage}
+          emptyTitle={activeView === "ended" ? "끝난 강의가 없습니다" : "운영중인 강의가 없습니다"}
+          emptyBody={activeView === "ended" ? "종료된 강의가 생기면 여기에 표시됩니다." : "반 추가 버튼으로 새 강의를 등록해 주세요."}
+        />
       </section>
     </main>
   );
@@ -267,6 +191,90 @@ function SmallStat({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <b>{value}</b>
     </span>
+  );
+}
+
+function ClassTableSection({
+  activeView,
+  operatingCount,
+  endedCount,
+  rows,
+  canManage,
+  emptyTitle,
+  emptyBody,
+}: {
+  activeView: "operating" | "ended";
+  operatingCount: number;
+  endedCount: number;
+  rows: ClassRow[];
+  canManage: boolean;
+  emptyTitle: string;
+  emptyBody: string;
+}) {
+  return (
+    <section style={listPanel}>
+      <div style={panelHead}>
+        <nav style={courseTabs} aria-label="강의 상태 보기">
+          <Link href="/classes" style={{ ...courseTab, ...(activeView === "operating" ? activeCourseTab : {}) }}>
+            운영중인 강의 <span style={tabCount}>{operatingCount}개</span>
+          </Link>
+          <Link href="/classes?view=ended" style={{ ...courseTab, ...(activeView === "ended" ? activeCourseTab : {}) }}>
+            끝난 강의 <span style={tabCount}>{endedCount}개</span>
+          </Link>
+        </nav>
+      </div>
+      {rows.length > 0 ? (
+        <div style={tableWrap}>
+          <table style={classTable}>
+            <thead>
+              <tr>
+                <th style={th}>반</th>
+                <th style={th}>상태</th>
+                <th style={th}>담당 강사</th>
+                <th style={th}>담당 조교</th>
+                <th style={{ ...th, textAlign: "right" }}>학생</th>
+                <th style={th}>요일/시간</th>
+                <th style={th}>최근/다음 차시</th>
+                <th style={{ ...th, textAlign: "right" }}>평균</th>
+                <th style={{ ...th, textAlign: "right" }}>출석률</th>
+                <th style={{ ...th, textAlign: "right" }}>과제율</th>
+                <th style={{ ...th, textAlign: "center" }} aria-label="반 관리" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const { classGroup, stats, effectiveStatus, lessonSignal } = row;
+                return (
+                  <ClassOpenRow
+                    key={classGroup.id}
+                    href={`/classes/${classGroup.id}`}
+                    classGroupId={classGroup.id}
+                    name={classGroup.name}
+                    meta={`${classGroup.subject || "과목 미지정"} / ${classGroup.grade || "학년 미지정"}`}
+                    iconText={classGroup.iconText}
+                    iconColor={classGroup.iconColor}
+                    statusLabel={classStatusLabel(effectiveStatus)}
+                    statusTone={classStatusTone(effectiveStatus)}
+                    teacherName={classGroup.teacher?.name ?? "-"}
+                    assistantName={assistantNames(classGroup)}
+                    studentCount={stats.studentCount}
+                    schedule={formatClassSchedule(classGroup)}
+                    latestLabel={lessonSignal.label}
+                    latestValue={lessonSignal.value}
+                    averageScore={stats.averageScore === null ? "-" : `${stats.averageScore}점`}
+                    attendanceRate={stats.attendanceRate === null ? "-" : `${stats.attendanceRate}%`}
+                    assignmentRate={stats.assignmentCompletionRate === null ? "-" : `${stats.assignmentCompletionRate}%`}
+                    canManage={canManage}
+                  />
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <Empty title={emptyTitle} body={emptyBody} />
+      )}
+    </section>
   );
 }
 
@@ -282,24 +290,6 @@ function Empty({ title, body }: { title: string; body?: string }) {
 function assistantNames(classGroup: { assistant?: { name: string } | null; classAssistants?: Array<{ assistant: { name: string } }> }) {
   const names = classGroup.classAssistants?.map((link) => link.assistant.name).filter(Boolean) ?? [];
   return names.length > 0 ? names.join(", ") : classGroup.assistant?.name ?? "-";
-}
-
-function matchesFilters(row: ClassRow, filters: ClassFilters) {
-  const classGroup = row.classGroup;
-  const q = filters.q.toLowerCase();
-  if (filters.status !== "all" && row.effectiveStatus !== filters.status) return false;
-  if (filters.grade !== "all" && classGroup.grade !== filters.grade) return false;
-  if (filters.subject !== "all" && classGroup.subject !== filters.subject) return false;
-  if (filters.teacherId !== "all" && classGroup.teacherId !== filters.teacherId) return false;
-  if (!q) return true;
-
-  return [classGroup.name, classGroup.subject, classGroup.grade, classGroup.teacher?.name, assistantNames(classGroup), formatClassSchedule(classGroup)]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(q));
-}
-
-function unique(values: Array<string | null>) {
-  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, "ko"));
 }
 
 function average(values: number[]) {
@@ -332,28 +322,23 @@ function daysAgo(days: number) {
 
 const page: CSSProperties = { padding: 12, color: "var(--asc-text)", background: "var(--asc-bg-subtle)", minHeight: "100vh" };
 const container: CSSProperties = { display: "flex", flexDirection: "column", gap: 10 };
-const header: CSSProperties = { background: "var(--asc-surface)", border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-lg)", padding: 12 };
-const headerLayout: CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 20, minHeight: 78 };
+const header: CSSProperties = { padding: "10px 2px 8px" };
+const headerLayout: CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 20 };
 const headerText: CSSProperties = { minWidth: 0, flex: "1 1 auto" };
 const eyebrow: CSSProperties = { margin: "0 0 4px", color: "var(--asc-primary)", fontSize: 12, fontWeight: 900 };
-const titleRow: CSSProperties = { display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" };
+const titleRow: CSSProperties = { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" };
 const pageTitle: CSSProperties = { margin: 0, color: "var(--asc-text)", fontSize: 28, lineHeight: 1.15, fontWeight: 950, letterSpacing: 0 };
 const pageDescription: CSSProperties = { margin: "6px 0 0", color: "var(--asc-text-muted)", fontSize: 13, lineHeight: 1.35 };
-const compactStats: CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0 };
+const compactStats: CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0, paddingLeft: 12, borderLeft: "1px solid var(--asc-border)" };
 const headerActions: CSSProperties = { justifyContent: "flex-end", alignSelf: "start", flex: "0 0 auto" };
-const smallStat: CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 4, padding: "0 14px", borderLeft: "1px solid var(--asc-border-strong)", color: "var(--asc-text-muted)", fontSize: 12, fontWeight: 850, lineHeight: 1.2, whiteSpace: "nowrap" };
-const filterBar: CSSProperties = { display: "grid", gridTemplateColumns: "minmax(220px, 1fr) 120px 120px 150px 120px auto auto auto", gap: 6, alignItems: "center", background: "var(--asc-surface)", border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-lg)", padding: 8 };
-const filterInput: CSSProperties = { height: 34, border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-md)", padding: "0 9px", minWidth: 0, fontWeight: 750, color: "var(--asc-text)" };
-const filterSelect: CSSProperties = { ...filterInput, background: "var(--asc-bg)" };
-const filterButton: CSSProperties = { height: 34, border: "1px solid var(--asc-primary)", borderRadius: "var(--asc-radius-md)", background: "var(--asc-primary)", color: "#fff", padding: "0 11px", fontSize: 12, fontWeight: 950, cursor: "pointer" };
-const resetButton: CSSProperties = { height: 34, border: "1px solid var(--asc-border-strong)", borderRadius: "var(--asc-radius-md)", background: "var(--asc-bg)", color: "var(--asc-text)", padding: "0 11px", display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", fontSize: 12, fontWeight: 950 };
-const filterCount: CSSProperties = { color: "var(--asc-text-muted)", fontSize: 12, fontWeight: 900, whiteSpace: "nowrap" };
+const smallStat: CSSProperties = { display: "inline-flex", alignItems: "baseline", gap: 4, padding: "0 10px", borderRight: "1px solid var(--asc-border)", color: "var(--asc-text-muted)", fontSize: 12, fontWeight: 850, lineHeight: 1.1, whiteSpace: "nowrap" };
 const listPanel: CSSProperties = { background: "var(--asc-surface)", border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-lg)", padding: 10 };
-const panelHead: CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 };
-const sectionTitle: CSSProperties = { margin: 0, fontSize: 18, fontWeight: 950 };
-const muted: CSSProperties = { margin: "4px 0 0", color: "var(--asc-text-muted)", fontSize: 12, fontWeight: 800 };
+const panelHead: CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 10 };
+const courseTabs: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 18, borderBottom: "1px solid var(--asc-border)", minHeight: 38 };
+const courseTab: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 7, minHeight: 38, borderBottom: "3px solid transparent", color: "var(--asc-text-muted)", textDecoration: "none", fontSize: 15, fontWeight: 900 };
+const activeCourseTab: CSSProperties = { color: "var(--asc-text)", borderBottomColor: "var(--asc-text)" };
+const tabCount: CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 30, height: 22, border: "1px solid var(--asc-border)", borderRadius: 999, background: "var(--asc-bg)", color: "var(--asc-text)", padding: "0 7px", fontSize: 12, fontWeight: 950 };
 const tableWrap: CSSProperties = { overflowX: "auto", border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-md)", background: "var(--asc-bg)" };
-const classTable: CSSProperties = { width: "100%", minWidth: 1160, borderCollapse: "collapse", tableLayout: "auto" };
+const classTable: CSSProperties = { width: "100%", minWidth: 1200, borderCollapse: "collapse", tableLayout: "auto" };
 const th: CSSProperties = { background: "var(--asc-bg-subtle)", borderBottom: "1px solid var(--asc-border-strong)", padding: "10px 12px", color: "var(--asc-text-muted)", textAlign: "left", whiteSpace: "nowrap", fontSize: 12, fontWeight: 950 };
 const empty: CSSProperties = { border: "1px dashed var(--asc-border)", borderRadius: "var(--asc-radius-lg)", padding: 18, display: "grid", gap: 4, textAlign: "center", color: "var(--asc-text-muted)", fontWeight: 800, background: "var(--asc-bg-subtle)" };
-

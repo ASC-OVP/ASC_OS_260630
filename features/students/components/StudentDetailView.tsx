@@ -1,10 +1,11 @@
 import { requireUser } from "@/lib/auth";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import { Badge } from "@/components/ui/Badge";
-import { Button, ButtonLink } from "@/components/ui/Button";
+import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import PhoneInput from "@/components/PhoneInput";
+import SchoolScoreRecordRow from "@/features/students/components/SchoolScoreRecordRow";
 import { todayKoreaDate } from "@/lib/date";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
@@ -31,6 +32,7 @@ type Props = {
 type ScorePoint = {
   date: string;
   title: string;
+  category: string;
   rawScore: number;
   maxScore: number;
   percent: number;
@@ -98,6 +100,14 @@ export default async function StudentDetailPage({ params, searchParams }: Props)
         attendanceRecords: { orderBy: { date: "desc" }, take: 12 },
         assignmentRecords: { orderBy: { date: "desc" }, take: 12 },
         scoreRecords: { orderBy: [{ title: "asc" }, { date: "asc" }] },
+        testScores: {
+          orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+          include: {
+            classGroup: { select: { name: true } },
+            classTest: { select: { name: true, type: true } },
+            exam: { select: { title: true, examDate: true, totalScore: true, questionCount: true } },
+          },
+        },
         counselingRecords: { orderBy: { date: "desc" }, include: { owner: true } },
         clinicRecords: { orderBy: { date: "desc" }, include: { owner: true } },
         questionRecords: { orderBy: { date: "desc" }, include: { owner: true } },
@@ -128,7 +138,7 @@ export default async function StudentDetailPage({ params, searchParams }: Props)
         [memo.content, memo.writer.name, memoTypeText(memo.type)].join(" ").toLocaleLowerCase("ko-KR").includes(memoQ.toLocaleLowerCase("ko-KR"))
       )
     : student.memos;
-  const scoreAnalysis = buildScoreAnalysis(student.scoreRecords);
+  const scoreAnalysis = buildScoreAnalysis(student.scoreRecords, student.testScores);
   const schoolGroups = groupBy(student.schoolScoreRecords, (record) => record.subject || "학교 성적");
   const careRecords = [
     ...student.counselingRecords.map((record) => ({ kind: "상담", date: record.date, title: record.title, content: record.content, status: record.status, owner: record.owner?.name ?? "-" })),
@@ -151,7 +161,9 @@ export default async function StudentDetailPage({ params, searchParams }: Props)
             }
             actions={
               <div className="asc-action-group">
-                <ButtonLink href="/students" variant="secondary" size="sm">닫기</ButtonLink>
+                <Link href="/students" style={closeLink} aria-label="닫기" title="닫기">
+                  ×
+                </Link>
               </div>
             }
           />
@@ -401,7 +413,7 @@ export default async function StudentDetailPage({ params, searchParams }: Props)
                 <form action={createSchoolScoreRecord} style={inlineAddForm}>
                   <input type="hidden" name="studentId" value={student.id} />
                   <input name="term" placeholder="학기 예: 2026 1학기" required style={wideInput} />
-                  <input name="examType" placeholder="중간/기말/수행" required style={miniInput} />
+                  <input name="examType" placeholder="중간/기말" required style={miniInput} />
                   <input name="subject" placeholder="과목" required style={miniInput} />
                   <input name="score" type="number" step="0.1" placeholder="점수" style={miniInput} />
                   <input name="grade" placeholder="등급" style={miniInput} />
@@ -459,7 +471,7 @@ function ScoreAnalysisPanel({ analysis }: { analysis: ScoreAnalysis }) {
       <section style={scoreAnalysisCard}>
         <div>
           <h3 style={analysisTitle}>테스트 성적 그래프</h3>
-          <p style={analysisLead}>테스트 점수를 입력하면 날짜 순서대로 그래프와 분석이 자동으로 표시됩니다.</p>
+          <p style={analysisLead}>소속 반의 정기 테스트와 단일 테스트 점수를 날짜 순서대로 분석합니다.</p>
         </div>
         <div style={emptyChartLarge}>분석할 테스트 성적이 없습니다.</div>
       </section>
@@ -471,7 +483,7 @@ function ScoreAnalysisPanel({ analysis }: { analysis: ScoreAnalysis }) {
       <div style={analysisHeader}>
         <div>
           <h3 style={analysisTitle}>테스트 성적 그래프</h3>
-          <p style={analysisLead}>성적 이력의 테스트 점수를 만점 대비 100점 환산으로 분석합니다.</p>
+          <p style={analysisLead}>소속 반의 정기 테스트와 단일 테스트 점수를 만점 대비 100점 환산으로 분석합니다.</p>
         </div>
         <span style={softBadge}>{analysis.points.length}회 기록</span>
       </div>
@@ -488,7 +500,7 @@ function ScoreAnalysisPanel({ analysis }: { analysis: ScoreAnalysis }) {
         <div style={analysisCopy}>
           <b>{analysis.summary}</b>
           <p>{analysis.advice}</p>
-          {analysis.lowest && <span style={softBadge}>보완 필요: {analysis.lowest.title} {formatScoreValue(analysis.lowest.percent)}점</span>}
+          {analysis.lowest && <span style={analysisBadge}>보완 필요: {analysis.lowest.title} {formatScoreValue(analysis.lowest.percent)}점</span>}
         </div>
       </div>
     </section>
@@ -500,7 +512,7 @@ function ScoreMetric({ label, value, sub, tone = "default" }: { label: string; v
     <div style={{ ...scoreMetric, ...(tone === "good" ? scoreMetricGood : {}), ...(tone === "danger" ? scoreMetricDanger : {}) }}>
       <span>{label}</span>
       <b>{value}</b>
-      {sub && <small>{sub}</small>}
+      {sub && <small style={metricSubText}>{sub}</small>}
     </div>
   );
 }
@@ -546,22 +558,18 @@ function ScoreTrendChart({ points }: { points: ScorePoint[] }) {
   );
 }
 
-function SchoolScoreGroup({ subject, records }: { subject: string; records: Array<{ id: string; term: string; examType: string; subject: string; score: number | null; grade: string | null; memo: string | null }> }) {
+function SchoolScoreGroup({ subject, records }: { subject: string; records: Array<{ id: string; studentId: string; term: string; examType: string; subject: string; score: number | null; grade: string | null; memo: string | null }> }) {
+  const sortedRecords = [...records].sort(compareSchoolScoreRecords);
+
   return (
     <section style={scoreGroup}>
       <div style={scoreList}>
         <h3 style={groupTitle}>{subject}</h3>
-        {records.map((record) => (
-          <div key={record.id} style={scoreRow}>
-            <span>{record.term}</span>
-            <b>{record.examType}</b>
-            <span style={scorePill}>{record.score === null ? "-" : `${record.score}점`}</span>
-            <span style={softBadge}>{record.grade ?? "-"}</span>
-            {record.memo && <span style={softBadge}>{record.memo}</span>}
-          </div>
+        {sortedRecords.map((record) => (
+          <SchoolScoreRecordRow key={record.id} record={record} />
         ))}
       </div>
-      <MiniLineChart values={records.map((record) => record.score)} />
+      <MiniLineChart values={sortedRecords.map((record) => record.score)} />
     </section>
   );
 }
@@ -572,8 +580,8 @@ function MiniLineChart({ values }: { values: Array<number | null> }) {
     return <div style={emptyChart}>차트 없음</div>;
   }
 
-  const width = 220;
-  const height = 82;
+  const width = 320;
+  const height = 112;
   const pad = 14;
   const max = Math.max(100, ...clean);
   const min = 0;
@@ -608,16 +616,72 @@ function groupBy<T>(items: T[], getKey: (item: T) => string) {
   }, {});
 }
 
-function buildScoreAnalysis(records: Array<{ date: string; title: string; score: number | null; maxScore: number }>): ScoreAnalysis {
-  const points = records
-    .filter((record) => typeof record.score === "number" && record.maxScore > 0)
+function compareSchoolScoreRecords(
+  a: { term: string; examType: string },
+  b: { term: string; examType: string }
+) {
+  const termCompare = schoolTermRank(a.term) - schoolTermRank(b.term);
+  if (termCompare !== 0) return termCompare;
+
+  const examCompare = schoolExamRank(a.examType) - schoolExamRank(b.examType);
+  if (examCompare !== 0) return examCompare;
+
+  return a.examType.localeCompare(b.examType, "ko-KR");
+}
+
+function schoolTermRank(term: string) {
+  const yearMatch = term.match(/(20\d{2})/);
+  const semesterMatch = term.match(/([12])\s*학기/);
+  const year = yearMatch ? Number(yearMatch[1]) : 9999;
+  const semester = semesterMatch ? Number(semesterMatch[1]) : 9;
+  return year * 10 + semester;
+}
+
+function schoolExamRank(examType: string) {
+  if (examType.includes("중간")) return 1;
+  if (examType.includes("기말")) return 2;
+  return 9;
+}
+
+function buildScoreAnalysis(
+  records: Array<{ date: string; title: string; score: number | null; maxScore: number }>,
+  testScores: Array<{
+    score: number | null;
+    totalScore: number | null;
+    updatedAt: Date;
+    createdAt: Date;
+    classGroup: { name: string };
+    classTest: { name: string; type: string };
+    exam: { title: string; examDate: string | null; totalScore: number | null; questionCount: number | null };
+  }>
+): ScoreAnalysis {
+  const manualPoints = records.map((record) => ({
+    date: record.date,
+    title: record.title || "테스트",
+    category: "수동 입력",
+    rawScore: record.score,
+    maxScore: record.maxScore || 100,
+  }));
+  const classTestPoints = testScores.map((record) => {
+    const testType = record.classTest.type === "REGULAR" ? "정기 테스트" : "단일 테스트";
+    return {
+      date: record.exam.examDate ?? formatDate(record.updatedAt ?? record.createdAt),
+      title: `${record.classGroup.name} · ${testType} · ${record.exam.title || record.classTest.name}`,
+      category: testType,
+      rawScore: record.score,
+      maxScore: record.totalScore ?? record.exam.totalScore ?? record.exam.questionCount ?? 100,
+    };
+  });
+  const points = [...manualPoints, ...classTestPoints]
+    .filter((record) => typeof record.rawScore === "number" && record.maxScore > 0)
     .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title, "ko-KR"))
     .map((record) => ({
       date: record.date,
-      title: record.title || "테스트",
-      rawScore: record.score ?? 0,
+      title: record.title,
+      category: record.category,
+      rawScore: record.rawScore ?? 0,
       maxScore: record.maxScore || 100,
-      percent: roundScore(((record.score ?? 0) / (record.maxScore || 100)) * 100),
+      percent: roundScore(((record.rawScore ?? 0) / (record.maxScore || 100)) * 100),
     }));
 
   const average = points.length ? roundScore(points.reduce((sum, point) => sum + point.percent, 0) / points.length) : 0;
@@ -713,6 +777,7 @@ const page: CSSProperties = { minHeight: "100vh", padding: 12, background: "var(
 const shell: CSSProperties = { width: "100%", maxWidth: "none", margin: 0, background: "var(--asc-surface)", border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-lg)", boxShadow: "none", overflow: "hidden" };
 const topBar: CSSProperties = { padding: 14, borderBottom: "1px solid var(--asc-border)", background: "var(--asc-surface)" };
 const backLink: CSSProperties = { color: "#6b7280", textDecoration: "none", fontSize: 12, fontWeight: 900 };
+const closeLink: CSSProperties = { width: 32, height: 32, display: "inline-grid", placeItems: "center", border: 0, borderRadius: 8, background: "transparent", color: "#111827", textDecoration: "none", fontSize: 28, fontWeight: 500, lineHeight: 1 };
 const detailGrid: CSSProperties = { display: "grid", gridTemplateColumns: "460px minmax(0, 1fr)", gap: 12, padding: 12, minHeight: "calc(100vh - 116px)" };
 const leftColumn: CSSProperties = { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", gap: 12, minHeight: 0 };
 const profileCard: CSSProperties = { border: "1px solid #d6dbe2", borderRadius: 12, padding: 16, background: "#fff" };
@@ -772,20 +837,20 @@ const analysisHeader: CSSProperties = { display: "flex", alignItems: "flex-start
 const analysisTitle: CSSProperties = { margin: 0, fontSize: 18, fontWeight: 950 };
 const analysisLead: CSSProperties = { margin: "4px 0 0", color: "#64748b", fontSize: 13, fontWeight: 850 };
 const scoreMetricGrid: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(132px, 1fr))", gap: 8 };
-const scoreMetric: CSSProperties = { border: "1px solid #e5e7eb", borderRadius: 8, background: "#fff", padding: "10px 11px", display: "grid", gap: 3, minHeight: 76 };
+const scoreMetric: CSSProperties = { minWidth: 0, border: "1px solid #e5e7eb", borderRadius: 8, background: "#fff", padding: "10px 11px", display: "grid", gap: 3, minHeight: 76 };
 const scoreMetricGood: CSSProperties = { border: "1px solid var(--asc-primary)", background: "var(--asc-primary-soft)" };
 const scoreMetricDanger: CSSProperties = { border: "1px solid #fecaca", background: "#fef2f2" };
-const analysisLayout: CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(220px, 300px)", gap: 12, alignItems: "center" };
-const scoreTrendChart: CSSProperties = { width: "100%", minHeight: 220, border: "1px solid #e5e7eb", borderRadius: 10, background: "#fff" };
-const analysisCopy: CSSProperties = { display: "grid", gap: 9, color: "#374151", fontSize: 14, lineHeight: 1.55 };
+const metricSubText: CSSProperties = { minWidth: 0, color: "#475569", lineHeight: 1.35, overflowWrap: "anywhere", wordBreak: "keep-all" };
+const analysisLayout: CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1.45fr) minmax(260px, .55fr)", gap: 14, alignItems: "center" };
+const scoreTrendChart: CSSProperties = { width: "100%", minHeight: 260, border: "1px solid #e5e7eb", borderRadius: 10, background: "#fff" };
+const analysisCopy: CSSProperties = { minWidth: 0, display: "grid", gap: 9, color: "#374151", fontSize: 14, lineHeight: 1.55, overflowWrap: "anywhere", wordBreak: "keep-all" };
+const analysisBadge: CSSProperties = { display: "inline-flex", alignItems: "center", minHeight: 24, width: "fit-content", maxWidth: "100%", padding: "4px 9px", borderRadius: 999, background: "#f1f5f9", color: "#475569", fontSize: 12, fontWeight: 900, whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "keep-all" };
 const emptyChartLarge: CSSProperties = { minHeight: 180, display: "grid", placeItems: "center", color: "#9ca3af", fontSize: 13, fontWeight: 900, border: "1px dashed #d1d5db", borderRadius: 10, background: "#fff" };
 const wideInput: CSSProperties = { ...miniInput, width: 180 };
 const answerText: CSSProperties = { marginTop: 4, color: "#083891" };
-const scoreGroup: CSSProperties = { display: "grid", gridTemplateColumns: "1fr 240px", gap: 16, alignItems: "center", borderBottom: "1px solid #e5e7eb", padding: "16px 0" };
+const scoreGroup: CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 340px", gap: 18, alignItems: "center", borderBottom: "1px solid #e5e7eb", padding: "16px 0" };
 const scoreList: CSSProperties = { display: "grid", gap: 8 };
 const groupTitle: CSSProperties = { margin: "0 0 6px", fontSize: 17, fontWeight: 950 };
-const scoreRow: CSSProperties = { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 14 };
-const scorePill: CSSProperties = { ...softBadge, background: "#fff", border: "1px solid #d1d5db", color: "#111827" };
-const chart: CSSProperties = { width: "100%", maxWidth: 230, background: "#fff" };
-const emptyChart: CSSProperties = { height: 82, display: "grid", placeItems: "center", color: "#9ca3af", fontSize: 12, fontWeight: 900, border: "1px dashed #d1d5db", borderRadius: 10 };
+const chart: CSSProperties = { width: "100%", maxWidth: 340, background: "#fff" };
+const emptyChart: CSSProperties = { height: 112, display: "grid", placeItems: "center", color: "#9ca3af", fontSize: 12, fontWeight: 900, border: "1px dashed #d1d5db", borderRadius: 10 };
 const emptyBox: CSSProperties = { padding: 18, color: "#6b7280", fontWeight: 900, textAlign: "center", border: "1px dashed #d1d5db", borderRadius: 10, background: "#fbfcfe" };

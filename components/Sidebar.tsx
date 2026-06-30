@@ -6,8 +6,8 @@ import type { CSSProperties, ReactNode } from "react";
 
 const menus = [
   { name: "\uB300\uC2DC\uBCF4\uB4DC", href: "/dashboard", icon: "dashboard" },
-  { name: "\uD559\uC0DD \uD604\uD669\uD310", href: "/students", icon: "students" },
   { name: "\uBC18 \uAD00\uB9AC", href: "/classes", icon: "classes" },
+  { name: "\uD559\uC0DD \uD604\uD669\uD310", href: "/students", icon: "students" },
   { name: "\uCE98\uB9B0\uB354", href: "/calendar", icon: "calendar" },
   { name: "\uBA54\uBAA8 \uAD00\uB9AC", href: "/memos", icon: "memos" },
   { name: "\uC5C5\uBB34 \uAD00\uB9AC", href: "/tasks", icon: "tasks" },
@@ -289,4 +289,3 @@ const userStyle: CSSProperties = { display: "flex", flexDirection: "column", gap
 const logoutStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 10, color: "#fecaca", textDecoration: "none", fontWeight: 900, padding: "9px 6px", outline: "none", boxShadow: "none", borderRadius: 8 };
 const logoutIconStyle: CSSProperties = { ...iconStyle, background: "rgba(222,52,18,.12)", color: "#fecaca" };
 const logoutCollapsedStyle: CSSProperties = { ...logoutStyle, width: 32, justifyContent: "center", padding: 7, borderRadius: 8, background: "rgba(255,255,255,.06)" };
-

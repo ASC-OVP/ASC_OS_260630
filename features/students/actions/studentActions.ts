@@ -2220,6 +2220,52 @@ export async function createSchoolScoreRecord(formData: FormData) {
   revalidatePath("/students");
 }
 
+export async function deleteSchoolScoreRecord(formData: FormData) {
+  const user = await requireUser();
+
+  const recordId = text(formData, "recordId") || text(formData, "id");
+  const studentId = text(formData, "studentId");
+
+  if (!recordId) {
+    throw new Error("삭제할 학교 성적을 찾을 수 없습니다.");
+  }
+
+  const record = await prisma.schoolScoreRecord.findFirst({
+    where: {
+      id: recordId,
+      academyId: user.academyId,
+      ...(studentId ? { studentId } : {}),
+    },
+    select: {
+      id: true,
+      studentId: true,
+      term: true,
+      examType: true,
+      subject: true,
+      score: true,
+      grade: true,
+    },
+  });
+
+  if (!record) {
+    throw new Error("학교 성적 기록을 찾을 수 없습니다.");
+  }
+
+  await prisma.schoolScoreRecord.delete({ where: { id: record.id } });
+
+  await recordActivity({
+    actor: user,
+    action: "DELETE",
+    entityType: "SchoolScoreRecord",
+    entityId: record.id,
+    summary: `학교 성적 삭제: ${record.term} / ${record.examType} / ${record.subject}`,
+    metadata: { studentId: record.studentId, score: record.score, grade: record.grade },
+  });
+
+  revalidatePath(`/students/${record.studentId}`);
+  revalidatePath("/students");
+}
+
 export async function deleteMemo(formData: FormData) {
   const user = await requireUser();
 
