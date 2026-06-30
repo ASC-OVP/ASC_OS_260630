@@ -20,6 +20,8 @@ type RecurringTaskSeed = {
   dueTime: string | null;
 };
 
+const recurringChecklistMarker = "\n\n---ASC_RECURRING_CHECKLIST---\n";
+
 export const weekdayOptions = [
   { value: "1", label: "월" },
   { value: "2", label: "화" },
@@ -49,6 +51,57 @@ export function daysOfWeekText(value: string | null | undefined) {
   const days = parseDaysOfWeek(value);
   if (days.size === 0) return "-";
   return weekdayOptions.filter((option) => days.has(Number(option.value))).map((option) => option.label).join("/");
+}
+
+export function parseMonthlyDays(value: string | null | undefined) {
+  const days = new Set<number>();
+  String(value ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const range = part.match(/^(\d{1,2})-(\d{1,2})$/);
+      if (range) {
+        const start = Number(range[1]);
+        const end = Number(range[2]);
+        if (start >= 1 && end <= 31 && start <= end) {
+          for (let day = start; day <= end; day += 1) days.add(day);
+        }
+        return;
+      }
+
+      const day = Number(part);
+      if (Number.isInteger(day) && day >= 1 && day <= 31) days.add(day);
+    });
+  return days;
+}
+
+export function monthlyDaysText(value: string | null | undefined, fallbackDay?: number | null) {
+  const compact = String(value ?? "").replace(/\s+/g, "");
+  if (compact) return compact;
+  return fallbackDay ? String(fallbackDay) : "-";
+}
+
+export function splitRecurringDescription(value: string | null | undefined) {
+  const raw = String(value ?? "");
+  const markerIndex = raw.indexOf(recurringChecklistMarker);
+  if (markerIndex < 0) return { description: raw, checklist: [] as string[] };
+
+  const description = raw.slice(0, markerIndex).trim();
+  const checklist = raw
+    .slice(markerIndex + recurringChecklistMarker.length)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return { description, checklist };
+}
+
+export function composeRecurringDescription(description: string | null | undefined, checklist: string[]) {
+  const cleanDescription = String(description ?? "").trim();
+  const cleanChecklist = checklist.map((line) => line.trim()).filter(Boolean);
+  if (cleanChecklist.length === 0) return cleanDescription || null;
+  return `${cleanDescription}${recurringChecklistMarker}${cleanChecklist.join("\n")}`;
 }
 
 export function getNextRecurringDate(task: Pick<RecurringTaskSeed, "recurrenceType" | "daysOfWeek" | "dayOfMonth" | "startDate" | "endDate">, from = new Date()) {
@@ -94,11 +147,12 @@ export async function generateDueRecurringTasks(user: { id: string; academyId: s
       if (exists) continue;
 
       await prisma.$transaction(async (tx) => {
+        const templateDescription = splitRecurringDescription(template.description);
         const task = await tx.task.create({
           data: {
             academyId: template.academyId,
             title: `${scheduledDate} ${template.title}`,
-            description: template.description,
+            description: templateDescription.description || null,
             type: template.type,
             studentId: template.studentId,
             classGroupId: template.classGroupId,
@@ -130,6 +184,16 @@ export async function generateDueRecurringTasks(user: { id: string; academyId: s
             memo: `정기 업무 자동 생성: ${scheduledDate}`,
           },
         });
+
+        if (templateDescription.checklist.length > 0) {
+          await tx.taskChecklistItem.createMany({
+            data: templateDescription.checklist.map((title, order) => ({
+              taskId: task.id,
+              title,
+              order,
+            })),
+          });
+        }
       });
       createdCount += 1;
     }
@@ -156,6 +220,8 @@ function dueDatesForTemplate(template: RecurringTaskSeed, until: Date, lookbackS
 function isRecurringOnDate(template: Pick<RecurringTaskSeed, "recurrenceType" | "daysOfWeek" | "dayOfMonth" | "startDate">, date: Date) {
   if (template.recurrenceType === "DAILY") return true;
   if (template.recurrenceType === "MONTHLY") {
+    const monthlyDays = parseMonthlyDays(template.daysOfWeek);
+    if (monthlyDays.size > 0) return monthlyDays.has(date.getDate());
     const day = template.dayOfMonth ?? parseDateOnly(template.startDate)?.getDate() ?? 1;
     return date.getDate() === day;
   }

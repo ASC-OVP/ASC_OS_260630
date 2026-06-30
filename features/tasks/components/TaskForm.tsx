@@ -1,5 +1,4 @@
 import { canCreateTask, requireUser } from "@/lib/auth";
-import { sheetFillPalette } from "@/lib/colorPalettes";
 import { prisma } from "@/lib/prisma";
 import type { CSSProperties } from "react";
 import { Button, ButtonLink } from "@/components/ui/Button";
@@ -9,6 +8,9 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
 import { createTaskAction } from "@/features/tasks/actions/taskActions";
+import ChecklistBuilder from "@/features/tasks/components/ChecklistBuilder";
+import TaskFormColorPicker from "@/features/tasks/components/TaskFormColorPicker";
+import TaskPrioritySelector from "@/features/tasks/components/TaskPrioritySelector";
 
 type Props = { searchParams: Promise<{ error?: string; date?: string }> };
 
@@ -104,28 +106,12 @@ export default async function SimpleNewTaskPage({ searchParams }: Props) {
             <option value="">없음</option>
             {students.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}
           </Select>
-          <Select label="우선순위" name="priority" defaultValue="NORMAL">
-            <option value="LOW">낮음</option>
-            <option value="NORMAL">보통</option>
-            <option value="HIGH">높음</option>
-            <option value="URGENT">긴급</option>
-          </Select>
-          <fieldset style={colorField} className="asc-field asc-field--full">
-            <legend style={legend}>업무 색상</legend>
-            <div style={colorGrid}>
-              {sheetFillPalette.map((color) => (
-                <label key={color.value} style={colorChoice} title={color.label}>
-                  <input name="color" type="radio" value={color.value} defaultChecked={color.value === "#3d85c6"} />
-                  <span style={colorChoiceDot(color.value)} />
-                  <span>{color.label}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
+          <TaskPrioritySelector defaultValue="NORMAL" />
+          <TaskFormColorPicker defaultValue="#3d85c6" />
           <Input label="시작일" type="date" name="startDate" defaultValue={defaultDate} />
           <Input label="마감일" type="date" name="dueDate" defaultValue={defaultDate} />
           <Textarea label="업무 설명" name="description" rows={5} placeholder="업무 배경, 처리 기준, 확인할 내용을 적어주세요." containerClassName="asc-field--full" />
-          <Textarea label="체크리스트" name="checklist" rows={5} placeholder={"한 줄에 하나씩 입력\n예: 대상 학생 확인\n예: 미제출자 메모 작성\n예: 처리 결과 기록"} containerClassName="asc-field--full" />
+          <ChecklistBuilder />
           <div style={actions} className="asc-form-actions">
             <ButtonLink href="/tasks" variant="secondary">취소</ButtonLink>
             <Button type="submit">업무 저장</Button>
@@ -147,32 +133,8 @@ function roleText(role: string) {
 const page: CSSProperties = { padding: 12, color: "var(--asc-text)", background: "var(--asc-bg-subtle)", minHeight: "100vh" };
 const card: CSSProperties = { width: "100%", maxWidth: "none", margin: 0 };
 const form: CSSProperties = { marginTop: 14 };
-const colorField: CSSProperties = { border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-md)", padding: 12, background: "var(--asc-bg-subtle)" };
 const legend: CSSProperties = { padding: "0 6px", fontSize: 13, fontWeight: 800, color: "var(--asc-text)" };
-const colorGrid: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 6, marginTop: 4 };
-const colorChoice: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "auto 18px minmax(0, 1fr)",
-  alignItems: "center",
-  gap: 7,
-  border: "1px solid var(--asc-border)",
-  borderRadius: "var(--asc-radius-sm)",
-  padding: "7px 8px",
-  background: "var(--asc-surface)",
-  fontSize: 12,
-  fontWeight: 800,
-};
 const assigneeField: CSSProperties = { border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-md)", padding: 12, background: "var(--asc-bg-subtle)" };
 const assigneeGrid: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginTop: 8 };
 const checkChip: CSSProperties = { display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 8, border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-md)", padding: "9px 10px", background: "var(--asc-surface)", fontSize: 13 };
 const actions: CSSProperties = { gridColumn: "1 / -1" };
-
-function colorChoiceDot(color: string): CSSProperties {
-  return {
-    width: 18,
-    height: 18,
-    borderRadius: 999,
-    border: "1px solid var(--asc-border-strong)",
-    background: color,
-  };
-}

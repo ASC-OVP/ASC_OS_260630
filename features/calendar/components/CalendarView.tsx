@@ -10,6 +10,7 @@ import {
   formatOperatingPeriod,
   parseClassDaysOfWeek,
 } from "@/lib/classGroups";
+import { generateDueRecurringTasks } from "@/lib/recurringTasks";
 import type { TaskStatus } from "@/lib/generated/prisma";
 import { prisma } from "@/lib/prisma";
 
@@ -18,6 +19,7 @@ export const dynamic = "force-dynamic";
 export default async function CalendarPage() {
   const user = await requireUser();
   const canViewStaffCalendars = user.role !== "ASSISTANT";
+  await generateDueRecurringTasks(user, addDays(new Date(), 45));
 
   const [classGroups, tasks, classRoomRows, taskStartRows, privateMemos, eventMemos, workShifts, staffRows] = await Promise.all([
     prisma.classGroup.findMany({
