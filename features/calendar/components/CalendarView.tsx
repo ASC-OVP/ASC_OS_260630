@@ -1,27 +1,27 @@
 import type { CSSProperties } from "react";
-import { PageHeader } from "@/components/ui/PageHeader";
-import AcademyCalendar, { type AcademyCalendarEvent } from "@/features/calendar/components/AcademyCalendar";
-import { requireUser } from "@/lib/auth";
+import AcademyCalendar from "@/features/calendar/components/AcademyCalendar";
+import { addDays, formatDateShort, isoDate, stripTime } from "@/features/calendar/lib/calendarFormatters";
+import { severityFromClass, severityFromTask, statusFromClass, statusFromTask } from "@/features/calendar/lib/calendarEvents";
+import type { AcademyCalendarEvent, CalendarEventStatus, CalendarSeverity } from "@/features/calendar/types";
+import { requireUser, roleText } from "@/lib/auth";
 import {
-  classGroupWhereForUser,
-  classStatusLabel,
-  classStatusTone,
   effectiveClassStatus,
   formatClassSchedule,
   formatOperatingPeriod,
   parseClassDaysOfWeek,
 } from "@/lib/classGroups";
-import { prisma } from "@/lib/prisma";
 import type { TaskStatus } from "@/lib/generated/prisma";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
 export default async function CalendarPage() {
   const user = await requireUser();
+  const canViewStaffCalendars = user.role !== "ASSISTANT";
 
-  const [classGroups, tasks, classRoomRows, taskStartRows, privateMemos, eventMemos] = await Promise.all([
+  const [classGroups, tasks, classRoomRows, taskStartRows, privateMemos, eventMemos, workShifts, staffRows] = await Promise.all([
     prisma.classGroup.findMany({
-      where: classGroupWhereForUser(user),
+      where: classGroupWhereForCalendar(user),
       orderBy: [{ status: "asc" }, { name: "asc" }],
       include: {
         teacher: { select: { id: true, name: true } },
@@ -68,6 +68,23 @@ export default async function CalendarPage() {
         writer: { select: { name: true } },
       },
     }),
+    prisma.assistantWorkShift.findMany({
+      where: {
+        academyId: user.academyId,
+        ...(canViewStaffCalendars ? {} : { assistantId: user.id }),
+      },
+      orderBy: [{ workDate: "asc" }, { startTime: "asc" }],
+      include: {
+        assistant: { select: { id: true, name: true } },
+      },
+    }),
+    canViewStaffCalendars
+      ? prisma.user.findMany({
+          where: { academyId: user.academyId, role: { in: ["ASSISTANT", "MANAGER"] }, isActive: true },
+          orderBy: [{ role: "asc" }, { name: "asc" }],
+          select: { id: true, name: true, role: true },
+        })
+      : Promise.resolve([]),
   ]);
 
   const roomByClassId = new Map(classRoomRows.map((row) => [row.id, row.room]));
@@ -76,63 +93,17 @@ export default async function CalendarPage() {
   const tasksWithStartDate = tasks.map((task) => ({ ...task, startDate: startDateByTaskId.get(task.id) ?? null }));
 
   const classEvents = classGroupsWithRoom.flatMap((classGroup) => classEventsFromClassGroup(classGroup));
-  const taskEvents = tasksWithStartDate.map((task) => taskEvent(task, user.id, user.role === "ASSISTANT"));
-  const events = [...classEvents, ...taskEvents];
-  const overdueCount = tasks.filter((task) => effectiveTaskStatus(task.status, task.dueDate) === "OVERDUE").length;
+  const taskEvents = tasksWithStartDate.map((task) => taskEvent(task));
+  const workShiftEvents = workShifts.map((shift) => workShiftEvent(shift));
   const activeClassCount = classGroups.filter((classGroup) => effectiveClassStatus(classGroup) === "ACTIVE").length;
 
   return (
     <main style={page}>
       <section style={container}>
-        <div style={header}>
-          <PageHeader
-            eyebrow="캘린더"
-            title="운영 일정 캘린더"
-            description="반 수업 반복 일정과 업무 시작일/마감일을 한 화면에서 확인합니다."
-            actions={<div style={summaryStrip} className="asc-status-row">
-              <Stat label="수업 일정" value={`${classEvents.length}개`} />
-              <Stat label="운영중 반" value={`${activeClassCount}개`} />
-              <Stat label="업무 일정" value={`${taskEvents.length}개`} />
-              <Stat label="지연 업무" value={`${overdueCount}개`} tone={overdueCount ? "danger" : "default"} />
-            </div>}
-          />
-        </div>
-
         <AcademyCalendar
-          events={events}
-          teachers={uniqueOptions([
-            ...classGroupsWithRoom.map((classGroup) => classGroup.teacher && { id: classGroup.teacher.id, label: classGroup.teacher.name }),
-            ...tasksWithStartDate.map((task) => task.classGroup?.teacher && { id: task.classGroup.teacher.id, label: task.classGroup.teacher.name }),
-          ])}
-          assistants={uniqueOptions([
-            ...classGroupsWithRoom.flatMap((classGroup) =>
-              classGroup.classAssistants.length > 0
-                ? classGroup.classAssistants.map((link) => ({ id: link.assistant.id, label: link.assistant.name }))
-                : classGroup.assistant
-                  ? [{ id: classGroup.assistant.id, label: classGroup.assistant.name }]
-                  : []
-            ),
-            ...tasksWithStartDate.flatMap((task) =>
-              task.assignees.length > 0
-                ? task.assignees.map((assignment) => ({ id: assignment.assignee.id, label: assignment.assignee.name }))
-                : [{ id: task.assignee.id, label: task.assignee.name }]
-            ),
-          ])}
-          classGroups={classGroupsWithRoom.map((classGroup) => ({ id: classGroup.id, label: classGroup.name }))}
-          subjects={uniqueOptions([
-            ...classGroupsWithRoom.map((classGroup) => (classGroup.subject ? { id: classGroup.subject, label: classGroup.subject } : null)),
-            ...tasksWithStartDate.map((task) => (task.classGroup?.subject ? { id: task.classGroup.subject, label: task.classGroup.subject } : null)),
-          ])}
-          statuses={uniqueOptions([
-            ...classGroupsWithRoom.map((classGroup) => {
-              const status = effectiveClassStatus(classGroup);
-              return { id: status, label: classStatusLabel(status) };
-            }),
-            ...tasksWithStartDate.map((task) => {
-              const status = effectiveTaskStatus(task.status, task.dueDate);
-              return { id: status, label: taskStatusLabel(status) };
-            }),
-          ])}
+          events={[...classEvents, ...taskEvents, ...workShiftEvents]}
+          staffOptions={staffRows.map((staff) => ({ id: staff.id, label: `${staff.name} · ${roleText(staff.role)}` }))}
+          canViewStaffCalendars={canViewStaffCalendars}
           privateMemos={privateMemos}
           eventMemos={eventMemos.map((memo) => ({
             eventKey: memo.eventKey,
@@ -141,10 +112,26 @@ export default async function CalendarPage() {
             updatedAt: memo.updatedAt.toISOString(),
             writerName: memo.writer?.name ?? null,
           }))}
+          activeClassCount={activeClassCount}
+          currentUserId={user.id}
         />
       </section>
     </main>
   );
+}
+
+function classGroupWhereForCalendar(user: { id: string; academyId: string; role: string }) {
+  if (user.role === "ASSISTANT") {
+    return {
+      academyId: user.academyId,
+      OR: [
+        { assistantId: user.id },
+        { classAssistants: { some: { assistantId: user.id } } },
+      ],
+    };
+  }
+
+  return { academyId: user.academyId };
 }
 
 function taskWhereForCalendar(user: { id: string; academyId: string; role: string }) {
@@ -154,19 +141,6 @@ function taskWhereForCalendar(user: { id: string; academyId: string; role: strin
       OR: [
         { assigneeId: user.id },
         { assignees: { some: { assigneeId: user.id } } },
-      ],
-    };
-  }
-
-  if (user.role === "TEACHER") {
-    return {
-      academyId: user.academyId,
-      OR: [
-        { creatorId: user.id },
-        { assigneeId: user.id },
-        { assignees: { some: { assigneeId: user.id } } },
-        { classGroup: { teacherId: user.id } },
-        { student: { teacherId: user.id } },
       ],
     };
   }
@@ -197,86 +171,96 @@ function classEventsFromClassGroup(classGroup: {
   const effectiveStatus = effectiveClassStatus(classGroup);
   if (effectiveStatus === "PAUSED") return [];
 
+  const status = statusFromClass(effectiveStatus);
+  const severity = severityFromClass(status);
   const daysOfWeek = parseClassDaysOfWeek(classGroup.daysOfWeek);
-
   const assistantNames =
     classGroup.classAssistants.length > 0
       ? classGroup.classAssistants.map((link) => link.assistant.name).join(", ")
       : classGroup.assistant?.name ?? null;
   const firstAssistant = classGroup.classAssistants[0]?.assistant ?? classGroup.assistant;
-  const color = classStatusTone(effectiveStatus);
+  const ownerLabel = [classGroup.teacher?.name, assistantNames].filter(Boolean).join(" / ") || null;
+  const ownerIds = uniqueIds([
+    classGroup.teacher?.id,
+    classGroup.assistant?.id,
+    ...classGroup.classAssistants.map((link) => link.assistant.id),
+  ]);
+  const common = {
+    source: "class_session" as const,
+    status,
+    severity,
+    sourceKey: classGroup.id,
+    subtitle: [classGroup.subject, classGroup.grade, classGroup.room].filter(Boolean).join(" / "),
+    description: classGroup.description,
+    ownerLabel,
+    ownerIds,
+    teacherId: classGroup.teacher?.id ?? null,
+    assistantId: firstAssistant?.id ?? null,
+    classGroupId: classGroup.id,
+    className: classGroup.name,
+    subject: classGroup.subject,
+    grade: classGroup.grade,
+    room: classGroup.room,
+    expectedStudentCount: classGroup._count.studentClasses,
+    sourceStatusRaw: effectiveStatus,
+    metadata: {
+      teacherName: classGroup.teacher?.name ?? null,
+      assistantName: assistantNames,
+      scheduleText: formatClassSchedule(classGroup),
+      operationPeriod: formatOperatingPeriod(classGroup),
+    },
+  };
 
   const savedLessons = classGroup.lessons.filter((lesson) => lesson.lessonDate);
   if (savedLessons.length > 0) {
     return savedLessons.map((lesson) => {
+      const lessonDate = lesson.lessonDate || isoDate(new Date());
       const lessonTitle = lesson.title || `${lesson.position}차시`;
       const startTime = lesson.startTime || classGroup.startTime || "09:00";
       const endTime = lesson.endTime || classGroup.endTime || undefined;
-      const timeText = [startTime, endTime].filter(Boolean).join("-");
+      const id = `class-lesson-${lesson.id}`;
+
       return {
-        id: `class-lesson-${lesson.id}`,
+        ...common,
+        id,
+        occurrenceKey: `${id}-${lessonDate}`,
         title: `${lessonTitle} · ${classGroup.name}`,
-        start: lesson.lessonDate || undefined,
-        allDay: false,
-        startTime,
-        endTime,
-        backgroundColor: color,
-        borderColor: color,
-        textColor: "#fff",
-        extendedProps: {
-          type: "class",
-          sourceId: classGroup.id,
-          teacherId: classGroup.teacher?.id ?? null,
-          teacherName: classGroup.teacher?.name ?? null,
-          assistantId: firstAssistant?.id ?? null,
-          assistantName: assistantNames,
-          classGroupId: classGroup.id,
-          className: classGroup.name,
-          subject: classGroup.subject,
-          grade: classGroup.grade,
-          room: classGroup.room,
-          status: effectiveStatus,
-          description: classGroup.description,
-          studentCount: classGroup._count.studentClasses,
-          scheduleText: `${lessonTitle} / ${lesson.lessonDate}${timeText ? ` ${timeText}` : ""}`,
-          operationPeriod: formatOperatingPeriod(classGroup),
+        startAt: `${lessonDate}T${startTime}`,
+        endAt: endTime ? `${lessonDate}T${endTime}` : undefined,
+        isAllDay: false,
+        isRecurring: false,
+        recurrenceLabelKo: "저장된 수업 회차",
+        metadata: {
+          ...common.metadata,
+          scheduleText: `${lessonTitle} / ${lessonDate}${startTime ? ` ${[startTime, endTime].filter(Boolean).join("-")}` : ""}`,
         },
       };
     });
   }
 
-  if (daysOfWeek.length === 0) return []; // no saved lessons or repeating weekday schedule
+  if (daysOfWeek.length === 0) return [];
+
+  const startTime = classGroup.startTime || "09:00";
+  const startRecur = classGroup.startDate || isoDate(addDays(new Date(), -120));
+  const endRecur = classGroup.endDate || isoDate(addDays(new Date(), 240));
+  const id = `class-${classGroup.id}`;
 
   return [
     {
-      id: `class-${classGroup.id}`,
+      ...common,
+      id,
+      occurrenceKey: id,
       title: classGroup.name,
-      daysOfWeek,
-      startTime: classGroup.startTime || "09:00",
+      startAt: `${startRecur}T${startTime}`,
+      endAt: classGroup.endTime ? `${startRecur}T${classGroup.endTime}` : undefined,
+      isAllDay: false,
+      isRecurring: true,
+      recurrenceLabelKo: `${formatClassSchedule(classGroup)} · ${formatOperatingPeriod(classGroup)}`,
+      repeatDaysOfWeek: daysOfWeek,
+      startRecur,
+      endRecur,
+      startTime,
       endTime: classGroup.endTime || undefined,
-      startRecur: classGroup.startDate || isoDate(addDays(new Date(), -120)),
-      endRecur: classGroup.endDate || isoDate(addDays(new Date(), 240)),
-      backgroundColor: color,
-      borderColor: color,
-      textColor: "#fff",
-      extendedProps: {
-        type: "class",
-        sourceId: classGroup.id,
-        teacherId: classGroup.teacher?.id ?? null,
-        teacherName: classGroup.teacher?.name ?? null,
-        assistantId: firstAssistant?.id ?? null,
-        assistantName: assistantNames,
-        classGroupId: classGroup.id,
-        className: classGroup.name,
-        subject: classGroup.subject,
-        grade: classGroup.grade,
-        room: classGroup.room,
-        status: effectiveStatus,
-        description: classGroup.description,
-        studentCount: classGroup._count.studentClasses,
-        scheduleText: `${formatClassSchedule(classGroup)} · ${formatOperatingPeriod(classGroup)}`,
-        operationPeriod: formatOperatingPeriod(classGroup),
-      },
     },
   ];
 }
@@ -295,40 +279,80 @@ function taskEvent(task: {
   assignees: Array<{ assigneeId: string; color: string | null; assignee: { id: string; name: string } }>;
   classGroup: { id: string; name: string; subject: string | null; teacherId: string | null; teacher: { id: string; name: string } | null } | null;
   student: { id: string; name: string; teacherId: string | null } | null;
-}, currentUserId: string, isAssistant: boolean): AcademyCalendarEvent {
+}): AcademyCalendarEvent {
   const range = normalizeTaskRange(task.startDate, task.dueDate, task.createdAt);
-  const status = effectiveTaskStatus(task.status, task.dueDate);
-  const assignmentColor = task.assignees.find((assignment) => assignment.assigneeId === currentUserId)?.color;
-  const color = (isAssistant ? assignmentColor : task.color) || task.color || assignmentColor || taskColor(status);
+  const status = statusFromTask(task.status, task.dueDate);
+  const severity = severityFromTask(status, task.priority);
   const taskAssignees = task.assignees.length > 0 ? task.assignees : [{ assigneeId: task.assignee.id, color: null, assignee: task.assignee }];
-  const assigneeIds = taskAssignees.map((assignment) => assignment.assigneeId);
+  const assigneeIds = uniqueIds(taskAssignees.map((assignment) => assignment.assigneeId));
   const assigneeName = taskAssignees.map((assignment) => assignment.assignee.name).join(", ");
+  const teacherId = task.classGroup?.teacher?.id ?? task.classGroup?.teacherId ?? task.student?.teacherId ?? null;
 
   return {
     id: `task-${task.id}`,
+    sourceKey: task.id,
+    occurrenceKey: `task-${task.id}`,
+    source: "internal_task",
+    status,
+    severity,
     title: task.title,
-    start: range.start,
-    end: range.end,
-    allDay: true,
-    backgroundColor: color,
-    borderColor: color,
-    textColor: "#fff",
-    extendedProps: {
-      type: "task",
-      sourceId: task.id,
-      assigneeId: assigneeIds[0] ?? task.assignee.id,
-      assigneeIds,
-      assigneeName,
-      teacherId: task.classGroup?.teacher?.id ?? task.classGroup?.teacherId ?? task.student?.teacherId ?? null,
-      teacherName: task.classGroup?.teacher?.name ?? null,
-      classGroupId: task.classGroup?.id ?? null,
-      className: task.classGroup?.name ?? null,
-      studentName: task.student?.name ?? null,
-      subject: task.classGroup?.subject ?? null,
-      status,
-      priority: task.priority,
-      description: task.description,
-      scheduleText: `${formatDate(task.startDate ?? range.startDate)} 시작 -> ${formatDate(task.dueDate ?? range.endDate)} 마감`,
+    subtitle: [task.classGroup?.name, task.student?.name].filter(Boolean).join(" / "),
+    description: task.description,
+    startAt: range.start,
+    endAt: range.end,
+    isAllDay: true,
+    ownerLabel: assigneeName || null,
+    ownerIds: assigneeIds,
+    assigneeId: assigneeIds[0] ?? task.assignee.id,
+    assigneeIds,
+    teacherId,
+    classGroupId: task.classGroup?.id ?? undefined,
+    className: task.classGroup?.name ?? null,
+    studentId: task.student?.id ?? undefined,
+    studentName: task.student?.name ?? null,
+    subject: task.classGroup?.subject ?? null,
+    sourceStatusRaw: task.status,
+    sourceColor: task.color,
+    metadata: {
+      priorityLabel: taskPriorityLabel(task.priority),
+      scheduleText: `${formatDateShort(range.startDate)} 시작 / ${formatDateShort(range.endDate)} 마감`,
+    },
+  };
+}
+
+function workShiftEvent(shift: {
+  id: string;
+  assistantId: string;
+  workDate: string;
+  startTime: string;
+  endTime: string;
+  status: string;
+  memo: string | null;
+  assistant: { id: string; name: string };
+}): AcademyCalendarEvent {
+  const status = workShiftStatus(shift.status);
+
+  return {
+    id: `work-shift-${shift.id}`,
+    sourceKey: shift.id,
+    occurrenceKey: `work-shift-${shift.id}`,
+    source: "assistant_work_shift",
+    status,
+    severity: workShiftSeverity(status),
+    title: `${shift.assistant.name} 출근`,
+    subtitle: `${shift.startTime}-${shift.endTime}`,
+    description: shift.memo,
+    startAt: `${shift.workDate}T${shift.startTime}`,
+    endAt: `${shift.workDate}T${shift.endTime}`,
+    isAllDay: false,
+    ownerLabel: shift.assistant.name,
+    ownerIds: [shift.assistantId],
+    assistantId: shift.assistantId,
+    workShiftId: shift.id,
+    sourceStatusRaw: shift.status,
+    metadata: {
+      workStatusLabel: workShiftStatusLabel(shift.status),
+      scheduleText: `${shift.workDate} ${shift.startTime}-${shift.endTime}`,
     },
   };
 }
@@ -341,40 +365,42 @@ function normalizeTaskRange(startDate: Date | null, dueDate: Date | null, create
 
   return {
     start: isoDate(orderedStart),
-    end: isoDate(addDays(orderedEnd, 1)),
+    end: isoDate(orderedEnd),
     startDate: orderedStart,
     endDate: orderedEnd,
   };
 }
 
-function effectiveTaskStatus(status: TaskStatus | string, dueDate: Date | null) {
-  if (status !== "DONE" && dueDate && dueDate.getTime() < Date.now()) return "OVERDUE";
-  return status;
+function workShiftStatus(status: string): CalendarEventStatus {
+  if (status === "WORKED") return "completed";
+  if (status === "ABSENT") return "delayed";
+  if (status === "CANCELLED") return "cancelled";
+  return "scheduled";
 }
 
-function taskColor(status: string) {
-  if (status === "DONE") return "#16a34a";
-  if (status === "IN_PROGRESS") return "#0b50d0";
-  if (status === "HOLD") return "#d97706";
-  if (status === "OVERDUE") return "#dc2626";
-  return "#64748b";
+function workShiftSeverity(status: CalendarEventStatus): CalendarSeverity {
+  if (status === "delayed") return "warning";
+  if (status === "cancelled") return "inactive";
+  if (status === "completed") return "resolved";
+  return "normal";
 }
 
-function taskStatusLabel(status: string) {
-  if (status === "TODO") return "해야 함";
-  if (status === "IN_PROGRESS") return "진행 중";
-  if (status === "DONE") return "완료";
-  if (status === "HOLD") return "보류";
-  if (status === "OVERDUE") return "지연";
-  return status;
+function workShiftStatusLabel(status: string) {
+  if (status === "WORKED") return "근무 완료";
+  if (status === "ABSENT") return "결근";
+  if (status === "CANCELLED") return "취소";
+  return "예정";
 }
 
-function uniqueOptions(items: Array<{ id: string; label: string } | null | undefined>) {
-  const map = new Map<string, string>();
-  for (const item of items) {
-    if (item?.id && !map.has(item.id)) map.set(item.id, item.label);
-  }
-  return [...map.entries()].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label, "ko"));
+function taskPriorityLabel(priority: string) {
+  if (priority === "URGENT") return "긴급";
+  if (priority === "HIGH") return "높음";
+  if (priority === "LOW") return "낮음";
+  return "보통";
+}
+
+function uniqueIds(items: Array<string | null | undefined>) {
+  return [...new Set(items.filter(Boolean) as string[])];
 }
 
 function coerceDate(value: Date | string | null) {
@@ -383,48 +409,5 @@ function coerceDate(value: Date | string | null) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function stripTime(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function addDays(date: Date, days: number) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function isoDate(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function formatDate(date: Date) {
-  return new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit" }).format(date);
-}
-
-function Stat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "danger" }) {
-  return (
-    <div style={{ ...stat, ...(tone === "danger" ? dangerStat : {}) }}>
-      <span>{label}</span>
-      <b>{value}</b>
-    </div>
-  );
-}
-
 const page: CSSProperties = { padding: 12, color: "var(--asc-text)", background: "var(--asc-bg-subtle)", minHeight: "100vh" };
 const container: CSSProperties = { width: "100%", maxWidth: "none", margin: 0, display: "grid", gap: 10 };
-const header: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 10,
-  alignItems: "flex-end",
-  border: "1px solid var(--asc-border)",
-  borderRadius: "var(--asc-radius-lg)",
-  background: "var(--asc-surface)",
-  padding: 12,
-};
-const summaryStrip: CSSProperties = { display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" };
-const stat: CSSProperties = { minWidth: 92, border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-lg)", padding: "7px 8px", display: "grid", gap: 2, background: "var(--asc-bg)" };
-const dangerStat: CSSProperties = { borderColor: "var(--asc-danger)", background: "var(--asc-danger-soft)", color: "var(--asc-danger)" };
