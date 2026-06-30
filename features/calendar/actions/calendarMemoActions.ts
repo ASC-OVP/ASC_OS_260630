@@ -2,6 +2,7 @@
 
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { CALENDAR_EVENT_SOURCES } from "@/features/calendar/constants";
 import { revalidatePath } from "next/cache";
 
 function text(formData: FormData, key: string) {
@@ -14,7 +15,7 @@ function dateValue(value: string) {
 }
 
 function eventTypeValue(value: string) {
-  return value === "class" || value === "task" ? value : "calendar";
+  return CALENDAR_EVENT_SOURCES.includes(value as (typeof CALENDAR_EVENT_SOURCES)[number]) ? value : "calendar";
 }
 
 export async function saveCalendarPrivateMemoAction(formData: FormData) {
