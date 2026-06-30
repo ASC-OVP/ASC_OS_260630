@@ -6,11 +6,7 @@ import { useRouter } from "next/navigation";
 import PhoneInput from "@/components/PhoneInput";
 import { createStudentFromSheet } from "@/features/students/actions/studentActions";
 
-type ClassGroupOption = {
-  id: string;
-  name: string;
-  teacherName?: string;
-};
+type ClassGroupOption = { id: string; name: string; teacherName?: string };
 
 type Props = {
   classGroups: ClassGroupOption[];
@@ -26,18 +22,20 @@ export default function StudentCreateModal({ classGroups, defaultClassGroupId }:
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
 
+  function openModal() {
+    setMessage("");
+    setOpen(true);
+  }
+
   function closeModal() {
-    if (!isPending) {
-      setOpen(false);
-      setMessage("");
-    }
+    if (isPending) return;
+    setOpen(false);
   }
 
   function submitStudent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
     setMessage("학생을 등록하고 있습니다.");
-
     startTransition(() => {
       void createStudentFromSheet(formData)
         .then(() => {
@@ -54,14 +52,7 @@ export default function StudentCreateModal({ classGroups, defaultClassGroupId }:
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => {
-          setMessage("");
-          setOpen(true);
-        }}
-        style={triggerButton}
-      >
+      <button type="button" onClick={openModal} style={triggerButton}>
         + 학생 추가
       </button>
 
@@ -77,13 +68,11 @@ export default function StudentCreateModal({ classGroups, defaultClassGroupId }:
             <form ref={formRef} onSubmit={submitStudent} style={form}>
               <div style={modalHeader}>
                 <div>
-                  <h2 id="student-create-title" style={title}>
-                    학생 추가
-                  </h2>
-                  <p style={description}>기본 정보와 배정 반을 입력합니다.</p>
+                  <h2 id="student-create-title" style={title}>학생 추가</h2>
+                  <p style={description}>기본 학생 정보와 배정할 반을 입력합니다.</p>
                 </div>
                 <button type="button" onClick={closeModal} style={closeButton} aria-label="닫기">
-                  x
+                  ×
                 </button>
               </div>
 
@@ -118,11 +107,7 @@ export default function StudentCreateModal({ classGroups, defaultClassGroupId }:
                 <label style={field}>
                   <span style={label}>학년</span>
                   <select name="grade" defaultValue="고1" style={input}>
-                    {grades.map((grade) => (
-                      <option key={grade} value={grade}>
-                        {grade}
-                      </option>
-                    ))}
+                    {grades.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
                   </select>
                 </label>
                 <label style={field}>
@@ -143,12 +128,8 @@ export default function StudentCreateModal({ classGroups, defaultClassGroupId }:
               {message ? <p style={messageText}>{message}</p> : null}
 
               <div style={actions}>
-                <button type="button" onClick={closeModal} style={cancelButton} disabled={isPending}>
-                  취소
-                </button>
-                <button type="submit" style={submitButton} disabled={isPending}>
-                  {isPending ? "등록 중" : "학생 등록"}
-                </button>
+                <button type="button" onClick={closeModal} style={cancelButton} disabled={isPending}>취소</button>
+                <button type="submit" style={submitButton} disabled={isPending}>학생 등록</button>
               </div>
             </form>
           </section>
@@ -197,22 +178,11 @@ const form: CSSProperties = { display: "grid", gap: 14, padding: 22 };
 const modalHeader: CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 };
 const title: CSSProperties = { margin: 0, color: "var(--asc-text)", fontSize: 24, fontWeight: 950, lineHeight: 1.1 };
 const description: CSSProperties = { margin: "5px 0 0", color: "var(--asc-text-muted)", fontSize: 13, fontWeight: 750 };
-const closeButton: CSSProperties = { width: 30, height: 30, border: 0, background: "transparent", color: "var(--asc-text)", fontSize: 20, lineHeight: 1, cursor: "pointer" };
+const closeButton: CSSProperties = { width: 30, height: 30, border: 0, background: "transparent", color: "var(--asc-text)", fontSize: 24, lineHeight: 1, cursor: "pointer" };
 const fieldGrid: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 };
 const field: CSSProperties = { display: "grid", gap: 5, minWidth: 0 };
 const label: CSSProperties = { color: "var(--asc-text-muted)", fontSize: 13, fontWeight: 900 };
-const input: CSSProperties = {
-  width: "100%",
-  minHeight: 36,
-  border: "1px solid var(--asc-border)",
-  borderRadius: 8,
-  background: "var(--asc-surface)",
-  color: "var(--asc-text)",
-  padding: "7px 10px",
-  fontSize: 14,
-  fontWeight: 800,
-  boxSizing: "border-box",
-};
+const input: CSSProperties = { width: "100%", minHeight: 36, border: "1px solid var(--asc-border)", borderRadius: 8, background: "var(--asc-surface)", color: "var(--asc-text)", padding: "7px 10px", fontSize: 14, fontWeight: 800, boxSizing: "border-box" };
 const textarea: CSSProperties = { minHeight: 76, resize: "vertical" };
 const messageText: CSSProperties = { margin: 0, color: "var(--asc-text-muted)", fontSize: 13, fontWeight: 800 };
 const actions: CSSProperties = { display: "flex", justifyContent: "flex-end", gap: 8 };

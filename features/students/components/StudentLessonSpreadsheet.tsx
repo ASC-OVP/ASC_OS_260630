@@ -115,6 +115,7 @@ const metaColumns: Array<Extract<GridColumn, { kind: "meta" }>> = [
 ];
 
 const historyLimit = 80;
+const addedLessonLabel = "추가된 차시";
 const sheetZoomStorageKey = "asc-students-sheet-zoom";
 const sheetZoomLevels = [75, 90, 100, 110, 125, 150] as const;
 const fillPalette: ColorPaletteItem[] = [
@@ -196,7 +197,15 @@ export default function StudentLessonSpreadsheet({
   const [draftRows, setDraftRows] = useState<DraftStudentRow[]>([]);
   const [visibleLessonIds, setVisibleLessonIds] = useState<string[]>([]);
   const [lessonPanelOpen, setLessonPanelOpen] = useState(false);
-  const [testPanelOpen, setTestPanelOpen] = useState(false);
+  const [testPanelMode, setTestPanelMode] = useState<"create" | "manage" | null>(null);
+  const [testMenuOpen, setTestMenuOpen] = useState(false);
+  const [testMenuBranch, setTestMenuBranch] = useState<"view" | "selectTests" | "manage" | null>(null);
+  const [testViewMode, setTestViewMode] = useState<"all" | "selected">(() =>
+    selectedTestExamId && selectedTestExamId !== ALL_TESTS_OPTION_ID ? "selected" : "all"
+  );
+  const [selectedTestIds, setSelectedTestIds] = useState<string[]>(() =>
+    selectedTestExamId && selectedTestExamId !== ALL_TESTS_OPTION_ID ? [selectedTestExamId] : []
+  );
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [rangeStartLessonId, setRangeStartLessonId] = useState("");
   const [rangeEndLessonId, setRangeEndLessonId] = useState("");
@@ -209,6 +218,7 @@ export default function StudentLessonSpreadsheet({
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null);
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
   const [selectedColumnIds, setSelectedColumnIds] = useState<string[]>([]);
+  const [selectedCellKeys, setSelectedCellKeys] = useState<string[]>([]);
   const [editingCellKey, setEditingCellKey] = useState<string | null>(null);
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editingMetaKey, setEditingMetaKey] = useState<string | null>(null);
@@ -231,17 +241,11 @@ export default function StudentLessonSpreadsheet({
   const [fillPaletteOpen, setFillPaletteOpen] = useState(false);
   const [columnSearchId, setColumnSearchId] = useState<string>("name");
   const [columnSearch, setColumnSearch] = useState("");
-  const [searchFocusTick, setSearchFocusTick] = useState(0);
   const [sortColumnId, setSortColumnId] = useState<string>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [sheetZoom, setSheetZoom] = useState(() => clampSheetZoom(readStoredNumber(sheetZoomStorageKey) ?? 100));
   const [sheetZoomInput, setSheetZoomInput] = useState(() => String(clampSheetZoom(readStoredNumber(sheetZoomStorageKey) ?? 100)));
-  const [formatDraft, setFormatDraft] = useState<CellStyle>({
-    fill: "#ffffff",
-    fontFamily: "Arial",
-    fontSize: "13",
-    align: "center",
-  });
+  const [formatDraft, setFormatDraft] = useState<CellStyle>(() => defaultSheetFormat());
   const [undoStack, setUndoStack] = useState<SheetHistorySnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<SheetHistorySnapshot[]>([]);
   const [statusText, setStatusText] = useState("");
@@ -250,10 +254,14 @@ export default function StudentLessonSpreadsheet({
   const sheetWrapRef = useRef<HTMLDivElement | null>(null);
   const colorMenuRef = useRef<HTMLDivElement | null>(null);
   const columnVisibilityRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const testMenuRef = useRef<HTMLDivElement | null>(null);
   const columnOrderScopeRef = useRef(scope);
   const rowDragAnchorRef = useRef<number | null>(null);
   const columnDragAnchorRef = useRef<number | null>(null);
   const suppressNextColumnClickRef = useRef(false);
+  const autoHiddenTestIdRef = useRef<string | null>(null);
+  const autoHiddenLessonIdsRef = useRef<string[]>([]);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const nameInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -261,18 +269,20 @@ export default function StudentLessonSpreadsheet({
   const activeRangeEditRef = useRef<{
     targetKey: string;
     lessonCells: Array<{ studentId: string; columnId: string }>;
-    metaCells: Array<{ row: StudentSheetRow; columnId: Exclude<EditableMetaColumnId, "classGroup"> }>;
+    metaCells: Array<{ row: StudentSheetRow; columnId: EditableMetaColumnId }>;
     historyCaptured: boolean;
   } | null>(null);
   const suppressBlurSaveRef = useRef(false);
   const canUndo = undoStack.length > 0;
   const canRedo = redoStack.length > 0;
-  const allTestsSelected = selectedTestExamId === ALL_TESTS_OPTION_ID;
-  const selectedTest = useMemo(() => {
-    if (allTestsSelected) return null;
-    if (selectedTestExamId) return classTests.find((test) => test.id === selectedTestExamId) ?? null;
-    return classTests.length === 1 ? classTests[0] : null;
-  }, [allTestsSelected, classTests, selectedTestExamId]);
+  const allTestsSelected = testViewMode === "all";
+  const selectedTestIdSet = useMemo(() => new Set(selectedTestIds), [selectedTestIds]);
+  const selectedClassTests = useMemo(() => {
+    if (allTestsSelected) return classTests;
+    return classTests.filter((test) => selectedTestIdSet.has(test.id));
+  }, [allTestsSelected, classTests, selectedTestIdSet]);
+  const selectedSingleTest = selectedClassTests.length === 1 ? selectedClassTests[0] : null;
+  const testViewSummary = allTestsSelected ? "전체보기" : selectedClassTests.length > 0 ? `선택 ${selectedClassTests.length}` : "선택 없음";
 
   const baseLessons = useMemo(() => {
     return buildLessonsForClass(selectedClassGroup, extraLessonCount, customColumns);
@@ -298,6 +308,50 @@ export default function StudentLessonSpreadsheet({
     const visible = lessons.filter((lesson) => activeVisibleLessonIds.includes(lesson.id));
     return visible.length > 0 ? visible : lessons.slice(0, Math.min(5, lessons.length));
   }, [activeVisibleLessonIds, lessons]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      const allowedTestIds = new Set(classTests.map((test) => test.id));
+      if (selectedTestExamId && selectedTestExamId !== ALL_TESTS_OPTION_ID && allowedTestIds.has(selectedTestExamId)) {
+        setTestViewMode("selected");
+        setSelectedTestIds([selectedTestExamId]);
+        return;
+      }
+      setSelectedTestIds((current) => current.filter((testId) => allowedTestIds.has(testId)));
+      if (!selectedTestExamId || selectedTestExamId === ALL_TESTS_OPTION_ID) setTestViewMode("all");
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [classTests, selectedTestExamId]);
+
+  useEffect(() => {
+    let handle: number | null = null;
+    const selectedSingleTests = selectedClassTests.filter((test) => test.type === "SINGLE");
+    if (!allTestsSelected && selectedSingleTests.length > 0 && selectedSingleTests.length === selectedClassTests.length) {
+      const linkedLessonIds = lessons
+        .filter((lesson) => selectedSingleTests.some((test) => classTestMatchesLesson(test, lesson, lessonLabels)))
+        .map((lesson) => lesson.id);
+      if (linkedLessonIds.length === 0) return;
+      autoHiddenTestIdRef.current = selectedSingleTests.map((test) => test.id).join("|");
+      autoHiddenLessonIdsRef.current = linkedLessonIds;
+      handle = window.setTimeout(() => {
+        setVisibleLessonIds((current) => (sameStringList(current, linkedLessonIds) ? current : linkedLessonIds));
+      }, 0);
+      return () => {
+        if (handle !== null) window.clearTimeout(handle);
+      };
+    }
+
+    if (!autoHiddenTestIdRef.current) return;
+    const autoHiddenLessonIds = autoHiddenLessonIdsRef.current;
+    autoHiddenTestIdRef.current = null;
+    autoHiddenLessonIdsRef.current = [];
+    handle = window.setTimeout(() => {
+      setVisibleLessonIds((current) => (sameStringList(current, autoHiddenLessonIds) ? [] : current));
+    }, 0);
+    return () => {
+      if (handle !== null) window.clearTimeout(handle);
+    };
+  }, [allTestsSelected, lessonLabels, lessons, selectedClassTests]);
 
   const rangeStartId = useMemo(
     () => (lessons.some((lesson) => lesson.id === rangeStartLessonId) ? rangeStartLessonId : lessons[0]?.id ?? ""),
@@ -353,7 +407,7 @@ export default function StudentLessonSpreadsheet({
           dateLabel: lesson.dateLabel,
           scheduleLabel: lesson.scheduleLabel,
         }));
-      const testColumns = testsForLesson(lesson, classTests, selectedTest, allTestsSelected).map((test) => {
+      const testColumns = testsForLesson(lesson, selectedClassTests, lessonLabels).map((test) => {
         const targetExam = examForClassTestLesson(test, lesson);
         return {
           id: lessonColumnId(scope, lesson.index, "test", test.id),
@@ -373,14 +427,14 @@ export default function StudentLessonSpreadsheet({
           examId: targetExam?.id ?? null,
         };
       });
-      return [...baseColumns, ...testColumns];
+      return [...baseColumns, ...testColumns].filter((column) => !hiddenColumnSet.has(column.id));
     });
 
     return [
       ...orderedStudentInfoColumns,
       ...lessonColumns,
     ];
-  }, [allTestsSelected, classTests, columnOrder, hiddenColumnSet, lessonLabels, scope, selectedTest, studentInfoColumns, visibleLessons]);
+  }, [columnOrder, hiddenColumnSet, lessonLabels, scope, selectedClassTests, studentInfoColumns, visibleLessons]);
 
   const effectiveColumnSearchId = useMemo(() => {
     return gridColumns.some((column) => column.id === columnSearchId) ? columnSearchId : "name";
@@ -404,6 +458,11 @@ export default function StudentLessonSpreadsheet({
     }
     return map;
   }, [gridColumns]);
+
+  const renderedVisibleLessons = useMemo(
+    () => visibleLessons.filter((lesson) => (lessonColumnsByLessonId.get(lesson.id)?.length ?? 0) > 0),
+    [lessonColumnsByLessonId, visibleLessons]
+  );
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -432,6 +491,7 @@ export default function StudentLessonSpreadsheet({
       setSelectionMode(null);
       setSelectedRowIds([]);
       setSelectedColumnIds([]);
+      setSelectedCellKeys([]);
       setDirtyValues({});
       setDirtyMetaValues({});
       setDraftRows([]);
@@ -480,6 +540,19 @@ export default function StudentLessonSpreadsheet({
   }, [columnVisibilityOpen]);
 
   useEffect(() => {
+    if (!testMenuOpen) return;
+
+    const handlePointerDown = (event: globalThis.MouseEvent) => {
+      if (event.target instanceof Node && testMenuRef.current?.contains(event.target)) return;
+      setTestMenuOpen(false);
+      setTestMenuBranch(null);
+    };
+
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => window.removeEventListener("mousedown", handlePointerDown);
+  }, [testMenuOpen]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(lessonPanelOpenKey(scope), lessonPanelOpen ? "1" : "0");
   }, [lessonPanelOpen, scope]);
@@ -520,12 +593,16 @@ export default function StudentLessonSpreadsheet({
 
   useEffect(() => {
     if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    window.addEventListener("click", close);
-    window.addEventListener("scroll", close, true);
+    const closeOnPointerDown = (event: globalThis.MouseEvent) => {
+      if (event.target instanceof Node && contextMenuRef.current?.contains(event.target)) return;
+      setContextMenu(null);
+    };
+    const closeOnScroll = () => setContextMenu(null);
+    window.addEventListener("mousedown", closeOnPointerDown);
+    window.addEventListener("scroll", closeOnScroll, true);
     return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("mousedown", closeOnPointerDown);
+      window.removeEventListener("scroll", closeOnScroll, true);
     };
   }, [contextMenu]);
 
@@ -533,11 +610,6 @@ export default function StudentLessonSpreadsheet({
     if (typeof window === "undefined") return;
     window.localStorage.setItem(cellStylesKey(scope), JSON.stringify(cellStyles));
   }, [cellStyles, scope]);
-
-  useEffect(() => {
-    if (searchFocusTick === 0) return;
-    searchInputRef.current?.focus();
-  }, [searchFocusTick]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -612,10 +684,23 @@ export default function StudentLessonSpreadsheet({
     const visibleIds = new Set(gridColumns.map((column) => column.id));
     return new Set(selectedColumnIds.filter((id) => visibleIds.has(id)));
   }, [gridColumns, selectedColumnIds]);
+  const selectedCellKeySet = useMemo(() => {
+    const visibleRowIds = new Set(orderedRows.map((row) => row.id));
+    const visibleColumnIds = new Set(gridColumns.map((column) => column.id));
+    return new Set(
+      selectedCellKeys.filter((key) => {
+        const separator = key.indexOf(":");
+        if (separator < 0) return false;
+        const rowId = key.slice(0, separator);
+        const columnId = key.slice(separator + 1);
+        return visibleRowIds.has(rowId) && visibleColumnIds.has(columnId);
+      })
+    );
+  }, [gridColumns, orderedRows, selectedCellKeys]);
 
   const selectionScope = useMemo(
-    () => buildSelectionScope(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, orderedRows, gridColumns),
-    [gridColumns, orderedRows, selectedColumnIdSet, selectedRowIdSet, selection, selectionMode]
+    () => buildSelectionScope(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, orderedRows, gridColumns),
+    [gridColumns, orderedRows, selectedCellKeySet, selectedColumnIdSet, selectedRowIdSet, selection, selectionMode]
   );
   const hasSelectionSearchScope = Boolean(
     selectionMode &&
@@ -651,11 +736,11 @@ export default function StudentLessonSpreadsheet({
   const rangeMatchKeys = useMemo(() => {
     const searchQuery = columnSearch.trim();
     if (!searchQuery || !hasSelectionSearchScope) return new Set<string>();
-    const matches = selectedSheetCellsForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, displayRows, gridColumns)
+    const matches = selectedSheetCellsForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns)
       .filter((cell) => containsText(readDisplayedCellValue(cell.row, cell.columnId), searchQuery))
       .map((cell) => lessonCellKey(cell.row.id, cell.columnId));
     return new Set(matches);
-  }, [columnSearch, displayRows, gridColumns, hasSelectionSearchScope, readDisplayedCellValue, selectedColumnIdSet, selectedRowIdSet, selection, selectionMode]);
+  }, [columnSearch, displayRows, gridColumns, hasSelectionSearchScope, readDisplayedCellValue, selectedCellKeySet, selectedColumnIdSet, selectedRowIdSet, selection, selectionMode]);
 
   const draftStudentIds = useMemo(() => new Set(draftRows.map((row) => row.id)), [draftRows]);
   const dirtyCount =
@@ -684,10 +769,21 @@ export default function StudentLessonSpreadsheet({
     ].filter(Boolean);
     return parts.length > 0 ? parts.join(" · ") : "변경 없음";
   }, [dirtyCount, draftRowsWithContent.length, lessonConfigDirty]);
-  const selectionLabel = formatActiveSelectionLabel(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, displayRows, gridColumns);
+  const selectionLabel = formatActiveSelectionLabel(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns);
   const selectedColumn = gridColumns.find((column) => column.id === effectiveColumnSearchId);
   const selectedColumnLabel = selectedColumn ? columnLabel(selectedColumn) : "학생명";
   const searchTargetLabel = hasSelectionSearchScope ? "선택 범위" : isGlobalSearchScope ? "전체" : selectedColumnLabel;
+
+  const displayedFormatDraft = useMemo(() => {
+    const cells = selectedSheetCellsForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns);
+    if (cells.length === 0) {
+      return defaultSheetFormat();
+    }
+
+    const firstStyle = normalizedSheetFormat(cellStyles[lessonCellKey(cells[0].row.id, cells[0].columnId)]);
+    const isSameStyle = cells.every((cell) => sameSheetFormat(firstStyle, normalizedSheetFormat(cellStyles[lessonCellKey(cell.row.id, cell.columnId)])));
+    return isSameStyle ? firstStyle : defaultSheetFormat();
+  }, [cellStyles, displayRows, gridColumns, selectedCellKeySet, selectedColumnIdSet, selectedRowIdSet, selection, selectionMode]);
 
   function createHistorySnapshot(): SheetHistorySnapshot {
     const snapshotNameDrafts: Record<string, string> = { ...nameDrafts };
@@ -807,6 +903,7 @@ export default function StudentLessonSpreadsheet({
   function clearStructuredSelection() {
     setSelectedRowIds([]);
     setSelectedColumnIds([]);
+    setSelectedCellKeys([]);
   }
 
   function clearAllSelection() {
@@ -820,6 +917,7 @@ export default function StudentLessonSpreadsheet({
     if (!row) return;
     setSelection(null);
     setSelectedColumnIds([]);
+    setSelectedCellKeys([]);
     setSelectionMode("row");
     setSelectedRowIds((current) => {
       if (!additive) return [row.id];
@@ -832,13 +930,46 @@ export default function StudentLessonSpreadsheet({
     if (!column || !isColumnSelectable(column)) return;
     setSelection(null);
     setSelectedRowIds([]);
+    setSelectedCellKeys([]);
     setSelectionMode("column");
     setColumnSearchId(column.id);
     setSelectedColumnIds((current) => {
       if (!additive) return [column.id];
       return current.includes(column.id) ? current.filter((id) => id !== column.id) : [...current, column.id];
     });
-    setSearchFocusTick((current) => current + 1);
+  }
+
+  function rowSelectionAnchorIndex(fallbackIndex: number) {
+    if (selectionMode === "row" && selectedRowIds.length > 0) {
+      const selectedIndex = displayRows.findIndex((row) => row.id === selectedRowIds[0]);
+      if (selectedIndex >= 0) return selectedIndex;
+    }
+    if (selectionMode === "cell" && selection) {
+      return normalizeRange(selection).startRow;
+    }
+    return fallbackIndex;
+  }
+
+  function columnSelectionAnchorIndex(fallbackIndex: number) {
+    if (selectionMode === "column" && selectedColumnIds.length > 0) {
+      const selectedIndex = gridColumns.findIndex((column) => column.id === selectedColumnIds[0]);
+      if (selectedIndex >= 0) return selectedIndex;
+    }
+    if (selectionMode === "cell" && selection) {
+      return normalizeRange(selection).startCol;
+    }
+    return fallbackIndex;
+  }
+
+  function setRowSelectionRange(anchorIndex: number, currentIndex: number) {
+    const from = Math.min(anchorIndex, currentIndex);
+    const to = Math.max(anchorIndex, currentIndex);
+    const ids = displayRows.slice(from, to + 1).map((row) => row.id);
+    setSelection(null);
+    setSelectedColumnIds([]);
+    setSelectedCellKeys([]);
+    setSelectionMode(ids.length > 0 ? "row" : null);
+    setSelectedRowIds(ids);
   }
 
   function setColumnSelectionRange(anchorIndex: number, currentIndex: number) {
@@ -847,6 +978,7 @@ export default function StudentLessonSpreadsheet({
     const ids = gridColumns.slice(from, to + 1).filter(isColumnSelectable).map((column) => column.id);
     setSelection(null);
     setSelectedRowIds([]);
+    setSelectedCellKeys([]);
     setSelectionMode(ids.length > 0 ? "column" : null);
     setSelectedColumnIds(ids);
   }
@@ -876,7 +1008,7 @@ export default function StudentLessonSpreadsheet({
     setColumnDrag(null);
     if (!targetId || sourceId === targetId) return;
 
-    const nextOrder = swapColumnOrder(sourceId, targetId, studentInfoColumns);
+    const nextOrder = swapColumnOrder(sourceId, targetId, gridColumns);
     if (nextOrder.length === 0) return;
     pushHistory();
     setColumnOrder(nextOrder);
@@ -950,9 +1082,18 @@ export default function StudentLessonSpreadsheet({
     return selectedColumn?.kind === "meta" || selectedColumn?.kind === "custom" ? selectedColumn.id : null;
   }
 
+  function contextLessonForAction() {
+    if (!contextMenu?.lessonId) return null;
+    return lessons.find((lesson) => lesson.id === contextMenu.lessonId) ?? null;
+  }
+
   function contextColumnsForVisibility() {
     if (!contextMenu) return [];
     const candidates: GridColumn[] = [];
+
+    if (contextMenu.lessonId) {
+      candidates.push(...(lessonColumnsByLessonId.get(contextMenu.lessonId) ?? []));
+    }
 
     if (selectionMode === "column" && typeof contextMenu.colIndex === "number") {
       const menuColumn = gridColumns[contextMenu.colIndex];
@@ -979,7 +1120,7 @@ export default function StudentLessonSpreadsheet({
       }
     }
 
-    if (candidates.length === 0 && typeof contextMenu.colIndex === "number") {
+    if (typeof contextMenu.colIndex === "number") {
       const menuColumn = gridColumns[contextMenu.colIndex];
       if (menuColumn) candidates.push(menuColumn);
     }
@@ -1235,7 +1376,7 @@ export default function StudentLessonSpreadsheet({
     setStatusText("저장 대기");
   }
 
-  function setMetaCell(row: StudentSheetRow, columnId: Exclude<EditableMetaColumnId, "classGroup">, value: string) {
+  function setMetaCell(row: StudentSheetRow, columnId: EditableMetaColumnId, value: string) {
     const activeRangeEdit = activeRangeEditRef.current;
     const activeMetaCells =
       activeRangeEdit?.targetKey === lessonCellKey(row.id, columnId) && activeRangeEdit.metaCells.length > 0
@@ -1254,7 +1395,7 @@ export default function StudentLessonSpreadsheet({
       }
     } else if (shouldFillRange) {
       for (const cell of selectedCells) {
-        if (cell.column.kind !== "meta" || cell.column.id === "classGroup") continue;
+        if (cell.column.kind !== "meta") continue;
         queueMetaCellUpdate(cell.row, cell.column.id, value, nextMetaDrafts, nextDirtyMetaValues, nextClassGroupDraftIds);
       }
     } else {
@@ -1347,25 +1488,74 @@ export default function StudentLessonSpreadsheet({
     const key = lessonCellKey(row.id, "classGroup");
     const classGroup = classGroups.find((option) => option.id === classGroupId);
     const classGroupName = classGroup ? classGroup.name : "-";
+    const activeRangeEdit = activeRangeEditRef.current;
+    const activeClassGroupCells =
+      activeRangeEdit?.targetKey === key && activeRangeEdit.metaCells.length > 0
+        ? activeRangeEdit.metaCells.filter((cell) => cell.columnId === "classGroup")
+        : null;
+    const selectedCells = selectedEditableCells(selection, displayRows, gridColumns);
+    const shouldFillRange =
+      selectedCells.length > 1 &&
+      selectedCells.some((cell) => cell.column.kind === "meta" && cell.column.id === "classGroup" && lessonCellKey(cell.row.id, cell.columnId) === key);
+    const targetCells =
+      activeClassGroupCells ??
+      (shouldFillRange
+        ? selectedCells.filter((cell) => cell.column.kind === "meta" && cell.column.id === "classGroup").map((cell) => ({ row: cell.row, columnId: cell.column.id }))
+        : [{ row, columnId: "classGroup" as const }]);
+    const nextMetaDrafts: Record<string, string> = {};
+    const nextDirtyMetaValues: Record<string, DirtyMetaValue> = {};
+    const nextClassGroupDraftIds: Record<string, string> = {};
+
+    for (const cell of targetCells) {
+      const cellKey = lessonCellKey(cell.row.id, "classGroup");
+      nextMetaDrafts[cellKey] = classGroupName;
+      nextDirtyMetaValues[cellKey] = { studentId: cell.row.id, field: "classGroup", value: classGroupId };
+      nextClassGroupDraftIds[cell.row.id] = classGroupId;
+    }
     pushHistory();
+    activeRangeEditRef.current = null;
     setEditingMetaKey(null);
-    setMetaDrafts((current) => ({ ...current, [key]: classGroupName }));
-    setClassGroupDraftIds((current) => ({ ...current, [row.id]: classGroupId }));
-    setDirtyMetaValues((current) => ({ ...current, [key]: { studentId: row.id, field: "classGroup", value: classGroupId } }));
+    setMetaDrafts((current) => ({ ...current, ...nextMetaDrafts }));
+    setClassGroupDraftIds((current) => ({ ...current, ...nextClassGroupDraftIds }));
+    setDirtyMetaValues((current) => ({ ...current, ...nextDirtyMetaValues }));
     setStatusText("저장 대기");
   }
+  function setClassGroupTextDraft(row: StudentSheetRow, value: string) {
+    const key = lessonCellKey(row.id, "classGroup");
+    setMetaDrafts((current) => ({ ...current, [key]: value }));
+  }
+
+  function finishClassGroupTextEdit(row: StudentSheetRow) {
+    const key = lessonCellKey(row.id, "classGroup");
+    const rawValue = metaDrafts[key] ?? metaCellValue(row, "classGroup");
+    const resolved = resolveClassGroupInput(rawValue);
+    if (!resolved) {
+      setStatusText("일치하는 반을 선택해 주세요.");
+      return;
+    }
+    setMetaClassGroup(row, resolved.id);
+  }
+
   function resolveClassGroupInput(value: string) {
     const normalized = value.trim();
     if (!normalized || normalized === "-" || normalized === "미지정") {
       return { id: "", label: "-" };
     }
 
+    const normalizedLower = normalized.toLocaleLowerCase();
     const match = classGroups.find((option) => {
       const fullLabel = option.teacherName ? `${option.teacherName} / ${option.name}` : option.name;
       return option.id === normalized || option.name === normalized || fullLabel === normalized;
     });
 
-    return match ? { id: match.id, label: match.name } : null;
+    if (match) return { id: match.id, label: match.name };
+
+    const fuzzyMatches = classGroups.filter((option) => {
+      const fullLabel = option.teacherName ? `${option.teacherName} / ${option.name}` : option.name;
+      return option.name.toLocaleLowerCase().includes(normalizedLower) || fullLabel.toLocaleLowerCase().includes(normalizedLower);
+    });
+
+    return fuzzyMatches.length === 1 ? { id: fuzzyMatches[0].id, label: fuzzyMatches[0].name } : null;
   }
 
   function buildMetaUpdate(row: StudentSheetRow, columnId: EditableMetaColumnId, rawValue: string) {
@@ -1461,11 +1651,11 @@ export default function StudentLessonSpreadsheet({
   }
 
   function currentEditableCells() {
-    return selectedEditableCellsForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, displayRows, gridColumns);
+    return selectedEditableCellsForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns);
   }
 
   function currentSheetCells() {
-    return selectedSheetCellsForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, displayRows, gridColumns);
+    return selectedSheetCellsForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns);
   }
 
   function applyValueToSelection(value: string) {
@@ -1648,23 +1838,35 @@ export default function StudentLessonSpreadsheet({
     const nextId = lessonId(nextIndex);
     pushHistory();
     setExtraLessonCount(nextExtra);
+    setLessonLabels((current) => ({ ...current, [nextId]: addedLessonLabel }));
     setVisibleLessonIds((current) => [...new Set([...current, nextId])]);
+    setLessonConfigDirty(true);
   }
 
   function insertLessonAfter(afterLessonId: string) {
     const afterLesson = lessons.find((lesson) => lesson.id === afterLessonId);
-    const afterOrder = afterLesson ? lessons.findIndex((lesson) => lesson.id === afterLesson.id) : lessons.length - 1;
+    insertLessonNear(afterLessonId, afterLesson ?? null, 1);
+  }
+
+  function insertLessonBefore(lessonId: string) {
+    const targetIndex = lessons.findIndex((lesson) => lesson.id === lessonId);
+    const targetLesson = targetIndex >= 0 ? lessons[targetIndex] : null;
+    const previousLessonId = targetIndex > 0 ? lessons[targetIndex - 1]?.id ?? null : null;
+    insertLessonNear(previousLessonId, targetLesson, -1);
+  }
+
+  function insertLessonNear(afterLessonId: string | null, referenceLesson: Lesson | null, dateOffset: number) {
     const nextIndex = Math.max(0, ...baseLessons.map((lesson) => lesson.index), ...insertedLessons.map((lesson) => lesson.index)) + 1;
     const id = `${createLocalId("manual")}_${nextIndex}`;
-    const nextDate = afterLesson?.date ? formatDateInput(addDays(parseLocalDate(afterLesson.date), 1)) : "";
+    const nextDate = referenceLesson?.date ? formatDateInput(addDays(parseLocalDate(referenceLesson.date), dateOffset)) : "";
     const inserted: InsertedLesson = {
       id,
       index: nextIndex,
       afterId: afterLessonId,
-      label: `${Math.max(1, afterOrder + 2)}차시`,
+      label: addedLessonLabel,
       date: nextDate,
-      startTime: afterLesson?.startTime ?? selectedClassGroup?.startTime ?? "",
-      endTime: afterLesson?.endTime ?? selectedClassGroup?.endTime ?? "",
+      startTime: referenceLesson?.startTime ?? selectedClassGroup?.startTime ?? "",
+      endTime: referenceLesson?.endTime ?? selectedClassGroup?.endTime ?? "",
       memo: "",
       createdAt: currentClientTime(),
     };
@@ -1728,6 +1930,7 @@ export default function StudentLessonSpreadsheet({
     setEditingNameId(null);
     setSelectedRowIds([]);
     setSelectedColumnIds([]);
+    setSelectedCellKeys([]);
     setSelectionMode("cell");
     setSelection((current) => {
       const point = { rowIndex, colIndex };
@@ -1736,10 +1939,43 @@ export default function StudentLessonSpreadsheet({
     });
   }
 
+  function currentCellSelectionKeys() {
+    if (selectionMode !== "cell") return [];
+    if (selectedCellKeys.length > 0) return selectedCellKeys.filter((key) => selectedCellKeySet.has(key));
+    return selectedSheetCells(selection, displayRows, gridColumns).map((cell) => lessonCellKey(cell.row.id, cell.columnId));
+  }
+
+  function toggleCellSelection(rowIndex: number, colIndex: number) {
+    const row = displayRows[rowIndex];
+    const column = gridColumns[colIndex];
+    if (!row || !column) return;
+
+    const key = lessonCellKey(row.id, column.id);
+    const currentKeys = currentCellSelectionKeys();
+    const nextKeys = currentKeys.includes(key) ? currentKeys.filter((item) => item !== key) : [...currentKeys, key];
+    setEditingCellKey(null);
+    setEditingNameId(null);
+    setEditingMetaKey(null);
+    setSelection(null);
+    setSelectedRowIds([]);
+    setSelectedColumnIds([]);
+    setSelectedCellKeys(nextKeys);
+    setSelectionMode(nextKeys.length > 0 ? "cell" : null);
+  }
+
   function beginRowDrag(event: MouseEvent<HTMLTableCellElement>, rowIndex: number) {
     if (event.button !== 0) return;
     event.preventDefault();
     sheetWrapRef.current?.focus();
+    if (event.shiftKey) {
+      const anchorIndex = rowSelectionAnchorIndex(rowIndex);
+      rowDragAnchorRef.current = anchorIndex;
+      setEditingCellKey(null);
+      setEditingNameId(null);
+      setEditingMetaKey(null);
+      setRowSelectionRange(anchorIndex, rowIndex);
+      return;
+    }
     const additive = event.ctrlKey || event.metaKey;
     if (additive) {
       applyRowSelection(rowIndex, true);
@@ -1765,14 +2001,27 @@ export default function StudentLessonSpreadsheet({
       setSelectionMode("cell");
       setSelectedRowIds([]);
       setSelectedColumnIds([]);
+      setSelectedCellKeys([]);
       setSelection({ anchor: { rowIndex: 0, colIndex }, cursor: { rowIndex: displayRows.length - 1, colIndex } });
-      setSearchFocusTick((current) => current + 1);
       return;
     }
     setEditingCellKey(null);
     setEditingNameId(null);
     setEditingMetaKey(null);
     applyColumnSelection(colIndex, additive);
+  }
+
+  function beginEditColumn(colIndex: number) {
+    const column = gridColumns[colIndex];
+    if (!column || displayRows.length === 0 || !isEditableGridColumn(column)) return;
+    selectColumn(colIndex);
+
+    const columnCells = selectedEditableCellsForMode("column", null, new Set<string>(), new Set([column.id]), new Set<string>(), displayRows, gridColumns);
+    const firstCell = columnCells[0];
+    if (!firstCell) return;
+
+    captureRangeEdit({ row: firstCell.row, columnId: firstCell.columnId }, columnCells);
+    beginEditGridCell(firstCell.rowIndex, firstCell.colIndex, { preserveSelection: true });
   }
 
   function beginColumnSelect(event: MouseEvent<HTMLElement>, colIndex: number) {
@@ -1783,6 +2032,25 @@ export default function StudentLessonSpreadsheet({
     event.preventDefault();
     event.stopPropagation();
     sheetWrapRef.current?.focus();
+    if (event.shiftKey) {
+      const anchorIndex = columnSelectionAnchorIndex(colIndex);
+      columnDragAnchorRef.current = anchorIndex;
+      suppressNextColumnClickRef.current = true;
+      setEditingCellKey(null);
+      setEditingNameId(null);
+      setEditingMetaKey(null);
+      setColumnSelectionRange(anchorIndex, colIndex);
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      columnDragAnchorRef.current = null;
+      suppressNextColumnClickRef.current = true;
+      setEditingCellKey(null);
+      setEditingNameId(null);
+      setEditingMetaKey(null);
+      applyColumnSelection(colIndex, true);
+      return;
+    }
     columnDragAnchorRef.current = colIndex;
     suppressNextColumnClickRef.current = true;
     setIsDragging(true);
@@ -1858,7 +2126,9 @@ export default function StudentLessonSpreadsheet({
       const key = lessonCellKey(row.id, column.id);
       setEditingCellKey(null);
       setEditingNameId(null);
-      if (column.id !== "classGroup") {
+      if (column.id === "classGroup") {
+        setMetaDrafts((current) => ({ ...current, [key]: options.initialValue ?? "" }));
+      } else {
         setMetaCell(row, column.id, options.initialValue);
       }
       setEditingMetaKey(key);
@@ -1880,6 +2150,10 @@ export default function StudentLessonSpreadsheet({
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement || event.target instanceof HTMLSelectElement) return;
     event.preventDefault();
     sheetWrapRef.current?.focus();
+    if (event.ctrlKey || event.metaKey) {
+      toggleCellSelection(rowIndex, colIndex);
+      return;
+    }
     setIsDragging(true);
     setDragMode("cell");
     setEditingMetaKey(null);
@@ -1887,9 +2161,10 @@ export default function StudentLessonSpreadsheet({
     selectCell(rowIndex, colIndex, event.shiftKey);
   }
 
-  function openContextMenu(event: MouseEvent<HTMLElement>, rowIndex?: number, colIndex?: number) {
-    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement || event.target instanceof HTMLSelectElement) return;
+  function openContextMenu(event: MouseEvent<HTMLElement>, rowIndex?: number, colIndex?: number, lessonId?: string) {
+    if (!lessonId && (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement)) return;
     event.preventDefault();
+    event.stopPropagation();
     sheetWrapRef.current?.focus();
     const column = typeof colIndex === "number" ? gridColumns[colIndex] : null;
     const isHeaderContext = typeof rowIndex !== "number" && typeof colIndex === "number";
@@ -1908,14 +2183,16 @@ export default function StudentLessonSpreadsheet({
       const row = displayRows[rowIndex];
       const isInsideSelectedRow = Boolean(row && selectionMode === "row" && selectedRowIdSet.has(row.id));
       const isInsideSelectedColumn = Boolean(column && selectionMode === "column" && selectedColumnIdSet.has(column.id));
-      const isInsideCellSelection = isSelected(selectionMode === "cell" ? selection : null, rowIndex, colIndex);
+      const isInsideCellSelection =
+        selectionMode === "cell" &&
+        (isSelected(selection, rowIndex, colIndex) || Boolean(row && column && selectedCellKeySet.has(lessonCellKey(row.id, column.id))));
       if (!isInsideSelectedRow && !isInsideSelectedColumn && !isInsideCellSelection) {
         setSelectionMode("cell");
         clearStructuredSelection();
         setSelection({ anchor: { rowIndex, colIndex }, cursor: { rowIndex, colIndex } });
       }
     }
-    setContextMenu({ x: event.clientX, y: event.clientY, rowIndex, colIndex });
+    setContextMenu({ x: event.clientX, y: event.clientY, rowIndex, colIndex, lessonId });
   }
 
   function enterDrag(rowIndex: number, colIndex: number) {
@@ -1987,7 +2264,7 @@ export default function StudentLessonSpreadsheet({
         .filter((cell) => cell.column.kind === "lesson" || cell.column.kind === "custom")
         .map((cell) => ({ studentId: cell.row.id, columnId: cell.columnId })),
       metaCells: cells.flatMap((cell) => {
-        if (cell.column.kind !== "meta" || cell.column.id === "classGroup") return [];
+        if (cell.column.kind !== "meta") return [];
         return [{ row: cell.row, columnId: cell.column.id }];
       }),
       historyCaptured: false,
@@ -2015,6 +2292,16 @@ export default function StudentLessonSpreadsheet({
     if (shortcutPressed && key === "y") {
       event.preventDefault();
       redoSheetChange();
+      return;
+    }
+    if (shortcutPressed && key === "s") {
+      event.preventDefault();
+      if (isPending) return;
+      if (!hasPendingChanges) {
+        setStatusText("변경 없음");
+        return;
+      }
+      saveChanges();
       return;
     }
     if (shortcutPressed && key === "c" && !(event.target instanceof HTMLInputElement)) {
@@ -2056,7 +2343,7 @@ export default function StudentLessonSpreadsheet({
 
 
   function selectedTextMatrix() {
-    const matrix = selectedMatrixForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, displayRows, gridColumns, readDisplayedCellValue);
+    const matrix = selectedMatrixForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns, readDisplayedCellValue);
     return matrix.length > 0 ? matrix.map((row) => row.join("\t")).join("\n") : "";
   }
 
@@ -2092,7 +2379,7 @@ export default function StudentLessonSpreadsheet({
   }
 
   function pasteTextAtSelection(text: string) {
-    const startPoint = selectionStartPointForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, displayRows, gridColumns);
+    const startPoint = selectionStartPointForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns);
     if (!text.trim() || !startPoint) return;
 
     const startRow = startPoint.rowIndex;
@@ -2147,7 +2434,7 @@ export default function StudentLessonSpreadsheet({
 
   function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
     const text = event.clipboardData.getData("text/plain");
-    if (!text.trim() || !selectionStartPointForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, displayRows, gridColumns)) return;
+    if (!text.trim() || !selectionStartPointForMode(selectionMode, selection, selectedRowIdSet, selectedColumnIdSet, selectedCellKeySet, displayRows, gridColumns)) return;
     pasteTextAtSelection(text);
     event.preventDefault();
   }
@@ -2226,7 +2513,7 @@ export default function StudentLessonSpreadsheet({
     if (recordCells.length === 0 && customCells.length === 0 && metaCells.length === 0 && draftRowsReadyToCreate.length === 0 && !shouldSaveLessonConfig) return;
     const recordFormData = new FormData();
     recordFormData.set("cells", JSON.stringify(recordCells));
-    recordFormData.set("selectedClassTestId", allTestsSelected ? "" : selectedTest?.id ?? "");
+    recordFormData.set("selectedClassTestId", selectedSingleTest?.id ?? "");
     recordFormData.set("selectedClassGroupId", effectiveClassGroupId ?? "");
     const customFormData = new FormData();
     customFormData.set("cells", JSON.stringify(customCells));
@@ -2312,7 +2599,9 @@ export default function StudentLessonSpreadsheet({
       ? `선택된 행 ${displayRows.filter((row) => selectedRowIdSet.has(row.id)).length}개`
       : selectionMode === "column"
         ? `선택된 열 ${gridColumns.filter((column) => selectedColumnIdSet.has(column.id)).length}개`
-        : replaceScopeDescription(selection, displayRows, gridColumns, replaceTargetCells);
+        : selectedCellKeySet.size > 0
+          ? `선택된 셀 ${selectedCellKeySet.size}개`
+          : replaceScopeDescription(selection, displayRows, gridColumns, replaceTargetCells);
   const replacePreviewCount = countReplaceChanges(
     replaceTargetCells,
     replaceFindText,
@@ -2324,10 +2613,51 @@ export default function StudentLessonSpreadsheet({
   const deletableContextColumn = contextMenu ? contextTargetCustomColumn() : null;
   const insertAfterColumnId = contextMenu ? contextColumnForInsert() : null;
   const hideableContextColumns = contextMenu ? contextColumnsForVisibility() : [];
+  const contextLesson = contextMenu ? contextLessonForAction() : null;
   const contextRowsForAction = contextMenu ? selectedRowsForAction() : [];
   const contextHasRowsForAction = contextRowsForAction.length > 0;
   const contextHasPersistedRows = contextRowsForAction.some((row) => !isDraftStudentRow(row));
   const hasClipboardSelection = selectedTextMatrix().length > 0;
+
+  function pushTestSelection(nextTestId: string) {
+    const params = new URLSearchParams();
+    if (effectiveClassGroupId) params.set("classGroupId", effectiveClassGroupId);
+    if (nextTestId) params.set("testId", nextTestId);
+    const query = params.toString();
+    router.push(query ? "/students?" + query : "/students");
+  }
+
+  function closeTestMenu() {
+    setTestMenuOpen(false);
+    setTestMenuBranch(null);
+  }
+
+  function showAllClassTests() {
+    setTestViewMode("all");
+    setSelectedTestIds([]);
+    pushTestSelection(ALL_TESTS_OPTION_ID);
+    closeTestMenu();
+  }
+
+  function toggleSelectedClassTest(testId: string) {
+    setTestViewMode("selected");
+    setSelectedTestIds((current) => (current.includes(testId) ? current.filter((id) => id !== testId) : [...current, testId]));
+  }
+
+  function selectAllClassTestsForView() {
+    setTestViewMode("selected");
+    setSelectedTestIds(classTests.map((test) => test.id));
+  }
+
+  function clearSelectedClassTestsForView() {
+    setTestViewMode("selected");
+    setSelectedTestIds([]);
+  }
+
+  function openTestManagementPanel(mode: "create" | "manage") {
+    closeTestMenu();
+    setTestPanelMode(mode);
+  }
 
   return (
     <div style={{ ...shell, ...(isFullscreen ? fullscreenShell : {}) }}>
@@ -2341,31 +2671,110 @@ export default function StudentLessonSpreadsheet({
         <span style={toolbarDivider} />
 
         <div style={testToolbar}>
-          <span style={testMetaText}>시험</span>
-          <select
-            value={allTestsSelected ? ALL_TESTS_OPTION_ID : selectedTest?.id ?? ""}
-            disabled={!effectiveClassGroupId || classTests.length === 0}
-            onChange={(event) => {
-              const nextTestId = event.target.value;
-              const params = new URLSearchParams();
-              if (effectiveClassGroupId) params.set("classGroupId", effectiveClassGroupId);
-              if (nextTestId) params.set("testId", nextTestId);
-              const query = params.toString();
-              router.push(query ? "/students?" + query : "/students");
-            }}
-            style={testSelect}
-            aria-label="시험 선택"
-          >
-            {classTests.length === 0 ? <option value="">등록된 시험이 없습니다</option> : null}
-            {classTests.length > 1 ? <option value={ALL_TESTS_OPTION_ID}>전체 시험</option> : null}
-            {classTests.length > 1 ? <option value="">시험 선택</option> : null}
-            {classTests.map((test) => (
-              <option key={test.id} value={test.id}>
-                {classTestOptionLabel(test, lessons)}
-              </option>
-            ))}
-          </select>
-          <ToolbarIconButton icon="settings" title="시험 관리" onClick={() => setTestPanelOpen(true)} disabled={!effectiveClassGroupId} />
+          <div ref={testMenuRef} style={testMenuWrap}>
+            <button
+              type="button"
+              style={{ ...testMenuButton, ...(!effectiveClassGroupId ? disabledTestMenuButton : {}) }}
+              onClick={() => {
+                if (!effectiveClassGroupId) return;
+                setTestMenuOpen((current) => !current);
+                setTestMenuBranch("view");
+              }}
+              disabled={!effectiveClassGroupId}
+              aria-haspopup="menu"
+              aria-expanded={testMenuOpen}
+            >
+              {"\uD14C\uC2A4\uD2B8"}
+              <span style={testMenuChevron}>{"\u25BE"}</span>
+            </button>
+            {testMenuOpen ? (
+              <div style={testMenuPanel} role="menu">
+                <div
+                  style={testMenuItemWrap}
+                  onMouseEnter={() => setTestMenuBranch("view")}
+                  onFocus={() => setTestMenuBranch("view")}
+                >
+                  <button type="button" style={testMenuItemButton} onClick={() => setTestMenuBranch("view")} role="menuitem">
+                    <span>{"\uD14C\uC2A4\uD2B8 \uBCF4\uAE30 \uC124\uC815"}</span>
+                    <span style={testMenuArrow}>{"\u203A"}</span>
+                  </button>
+                  {testMenuBranch === "view" || testMenuBranch === "selectTests" ? (
+                    <div style={testSubMenuPanel} role="menu">
+                      <button
+                        type="button"
+                        style={{ ...testSubMenuButton, ...(classTests.length === 0 ? disabledTestSubMenuButton : {}) }}
+                        onClick={showAllClassTests}
+                        disabled={classTests.length === 0}
+                        role="menuitem"
+                      >
+                        {"\uC804\uCCB4\uBCF4\uAE30"}
+                      </button>
+                      <div
+                        style={testMenuItemWrap}
+                        onMouseEnter={() => setTestMenuBranch("selectTests")}
+                        onFocus={() => setTestMenuBranch("selectTests")}
+                      >
+                        <button
+                          type="button"
+                          style={{ ...testSubMenuButton, ...(classTests.length === 0 ? disabledTestSubMenuButton : {}) }}
+                          onClick={() => setTestMenuBranch("selectTests")}
+                          disabled={classTests.length === 0}
+                          role="menuitem"
+                        >
+                          <span>{"\uC120\uD0DD \uBCF4\uAE30"}</span>
+                          <span style={testMenuArrow}>{"\u203A"}</span>
+                        </button>
+                        {testMenuBranch === "selectTests" ? (
+                          <div style={testChecklistPanel} role="menu">
+                            <div style={testChecklistActions}>
+                              <button type="button" style={testChecklistMiniButton} onClick={selectAllClassTestsForView}>
+                                {"\uC804\uCCB4 \uC120\uD0DD"}
+                              </button>
+                              <button type="button" style={testChecklistMiniButton} onClick={clearSelectedClassTestsForView}>
+                                {"\uC120\uD0DD \uD574\uC81C"}
+                              </button>
+                            </div>
+                            <div style={testChecklistList}>
+                              {classTests.map((test) => {
+                                const checked = !allTestsSelected && selectedTestIdSet.has(test.id);
+                                return (
+                                  <label key={test.id} style={{ ...testChecklistLabel, ...(checked ? testChecklistLabelChecked : {}) }}>
+                                    <input type="checkbox" checked={checked} onChange={() => toggleSelectedClassTest(test.id)} />
+                                    <span style={testChecklistText}>{classTestOptionLabel(test, lessons)}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                <div
+                  style={testMenuItemWrap}
+                  onMouseEnter={() => setTestMenuBranch("manage")}
+                  onFocus={() => setTestMenuBranch("manage")}
+                >
+                  <button type="button" style={testMenuItemButton} onClick={() => setTestMenuBranch("manage")} role="menuitem">
+                    <span>{"\uD14C\uC2A4\uD2B8 \uCD94\uAC00 \uAD00\uB9AC"}</span>
+                    <span style={testMenuArrow}>{"\u203A"}</span>
+                  </button>
+                  {testMenuBranch === "manage" ? (
+                    <div style={testSubMenuPanel} role="menu">
+                      <button type="button" style={testSubMenuButton} onClick={() => openTestManagementPanel("create")} role="menuitem">
+                        {"\uCD94\uAC00"}
+                      </button>
+                      <button type="button" style={testSubMenuButton} onClick={() => openTestManagementPanel("manage")} role="menuitem">
+                        {"\uAD00\uB9AC"}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <span style={testMetaText}>{testViewSummary}</span>
           {classTests.length === 0 && effectiveClassGroupId ? <span style={warningText}>시험 관리에서 먼저 등록하세요.</span> : null}
         </div>
 
@@ -2420,25 +2829,24 @@ export default function StudentLessonSpreadsheet({
           )}
         </div>
 
-        <ColorPaletteDropdown label="" title="채우기 색상" open={fillPaletteOpen} setOpen={setFillPaletteOpen} currentColor={formatDraft.fill ?? "#ffffff"} palette={fillPalette} onSelect={(value) => updateFormat({ fill: value })} menuRef={colorMenuRef} />
-        <select value={formatDraft.fontFamily ?? "Arial"} onChange={(event) => updateFormat({ fontFamily: event.target.value })} style={compactSelect} aria-label="글꼴">
+        <ColorPaletteDropdown label="" title="채우기 색상" open={fillPaletteOpen} setOpen={setFillPaletteOpen} currentColor={displayedFormatDraft.fill ?? "#ffffff"} palette={fillPalette} onSelect={(value) => updateFormat({ fill: value })} menuRef={colorMenuRef} />
+        <select value={displayedFormatDraft.fontFamily ?? "Arial"} onChange={(event) => updateFormat({ fontFamily: event.target.value })} style={compactSelect} aria-label="글꼴">
           <option value="Arial">Arial</option>
           <option value="Inter">Inter</option>
           <option value="'Noto Sans KR'">Noto Sans KR</option>
           <option value="serif">Serif</option>
           <option value="monospace">Mono</option>
         </select>
-        <input type="number" min={10} max={24} value={formatDraft.fontSize ?? "13"} onChange={(event) => updateFormat({ fontSize: event.target.value })} style={sizeInput} aria-label="글자 크기" />
-        <button type="button" onClick={() => updateFormat({ bold: !formatDraft.bold })} className={formatDraft.bold ? "student-sheet-toolbar-button is-active" : "student-sheet-toolbar-button"} style={formatButton(formatDraft.bold)} title="Bold" aria-label="Bold">B</button>
-        <button type="button" onClick={() => updateFormat({ italic: !formatDraft.italic })} className={formatDraft.italic ? "student-sheet-toolbar-button is-active" : "student-sheet-toolbar-button"} style={formatButton(formatDraft.italic)} title="Italic" aria-label="Italic">I</button>
-        <button type="button" onClick={() => updateFormat({ underline: !formatDraft.underline })} className={formatDraft.underline ? "student-sheet-toolbar-button is-active" : "student-sheet-toolbar-button"} style={formatButton(formatDraft.underline)} title="Underline" aria-label="Underline">U</button>
-        <ToolbarIconButton icon="border" title="테두리" onClick={() => updateFormat({ border: !formatDraft.border })} active={Boolean(formatDraft.border)} />
-        <select value={formatDraft.align ?? "center"} onChange={(event) => updateFormat({ align: event.target.value as CellStyle["align"] })} style={compactSelect} aria-label="정렬">
+        <input type="number" min={10} max={24} value={displayedFormatDraft.fontSize ?? "13"} onChange={(event) => updateFormat({ fontSize: event.target.value })} style={sizeInput} aria-label="글자 크기" />
+        <button type="button" onClick={() => updateFormat({ bold: !displayedFormatDraft.bold })} className={displayedFormatDraft.bold ? "student-sheet-toolbar-button is-active" : "student-sheet-toolbar-button"} style={formatButton(displayedFormatDraft.bold)} title="Bold" aria-label="Bold">B</button>
+        <button type="button" onClick={() => updateFormat({ italic: !displayedFormatDraft.italic })} className={displayedFormatDraft.italic ? "student-sheet-toolbar-button is-active" : "student-sheet-toolbar-button"} style={formatButton(displayedFormatDraft.italic)} title="Italic" aria-label="Italic">I</button>
+        <button type="button" onClick={() => updateFormat({ underline: !displayedFormatDraft.underline })} className={displayedFormatDraft.underline ? "student-sheet-toolbar-button is-active" : "student-sheet-toolbar-button"} style={formatButton(displayedFormatDraft.underline)} title="Underline" aria-label="Underline">U</button>
+        <ToolbarIconButton icon="border" title="테두리" onClick={() => updateFormat({ border: !displayedFormatDraft.border })} active={Boolean(displayedFormatDraft.border)} />
+        <select value={displayedFormatDraft.align ?? "center"} onChange={(event) => updateFormat({ align: event.target.value as CellStyle["align"] })} style={compactSelect} aria-label="정렬">
           <option value="left">왼쪽</option>
           <option value="center">가운데</option>
           <option value="right">오른쪽</option>
         </select>
-        <ToolbarIconButton icon="check" title="현재 서식 적용" onClick={() => applyStyleToSelection(formatDraft)} />
         <ToolbarIconButton icon="reset" title="선택 서식 초기화" onClick={clearSelectionStyles} />
 
         <span style={toolbarDivider} />
@@ -2497,13 +2905,122 @@ export default function StudentLessonSpreadsheet({
             >
             <thead>
               <tr>
+                {gridColumns.map((column, colIndex) => {
+                  const isRowNumberColumn = column.kind === "meta" && column.id === "rowNumber";
+                  const isColumnSelected = selectionMode === "column" && selectedColumnIdSet.has(column.id);
+                  const isSortColumn = sortColumnId === column.id;
+                  const canReorderColumn = isReorderableColumn(column);
+                  const isColumnDragSource = columnDrag?.sourceId === column.id;
+                  const isColumnDropTarget = columnDrag?.targetId === column.id && columnDrag.sourceId !== column.id;
+                  const letterIndex = gridColumns.slice(0, colIndex).filter((item) => !(item.kind === "meta" && item.id === "rowNumber")).length;
+                  const letter = isRowNumberColumn ? "" : spreadsheetColumnLabel(letterIndex);
+
+                  return (
+                    <th
+                      key={`sheet-column-${column.id}`}
+                      onMouseEnter={() => {
+                        enterColumnDrag(column);
+                        if (dragMode === "column") enterDrag(0, colIndex);
+                      }}
+                      onMouseUp={() => finishColumnDrag(column)}
+                      onClick={(event) => {
+                        if (isRowNumberColumn) return;
+                        if (suppressNextColumnClickRef.current) {
+                          suppressNextColumnClickRef.current = false;
+                          return;
+                        }
+                        if (event.shiftKey) {
+                          const anchorIndex = columnSelectionAnchorIndex(colIndex);
+                          setColumnSelectionRange(anchorIndex, colIndex);
+                          return;
+                        }
+                        selectColumn(colIndex, event.ctrlKey || event.metaKey);
+                      }}
+                      onDoubleClick={() => {
+                        if (!isRowNumberColumn) beginEditColumn(colIndex);
+                      }}
+                      onContextMenu={(event) => openContextMenu(event, undefined, colIndex)}
+                      style={{
+                        ...columnLetterTh,
+                        ...zoomedStyles.columnLetterTh,
+                        ...stickyTop,
+                        zIndex: 7,
+                        minWidth: zoomDimension(column.width, sheetZoomFactor),
+                        width: zoomDimension(column.width, sheetZoomFactor),
+                        ...(isColumnSelected ? selectedColumnHeaderStyle : {}),
+                        ...(isColumnDragSource ? columnDragSourceTh : {}),
+                        ...(isColumnDropTarget ? columnDropTargetTh : {}),
+                      }}
+                      title={isRowNumberColumn ? "행 번호" : `${letter}열 - 클릭 선택, 더블클릭 전체 편집`}
+                    >
+                      {isRowNumberColumn ? (
+                        <span aria-hidden="true" />
+                      ) : (
+                        <div style={{ ...columnLetterInner, ...zoomedStyles.columnLetterInner }}>
+                          {canReorderColumn ? (
+                            <button
+                              type="button"
+                              data-column-drag-handle="true"
+                              onMouseDown={(event) => beginColumnDrag(event, column)}
+                              onClick={(event) => event.stopPropagation()}
+                              style={{
+                                ...columnLetterActionButton,
+                                ...(isColumnDragSource ? columnDragHandleActive : {}),
+                              }}
+                              title={`${letter}열 이동`}
+                              aria-label={`${letter}열 이동`}
+                            >
+                              ||
+                            </button>
+                          ) : (
+                            <span style={columnLetterActionSpacer} aria-hidden="true" />
+                          )}
+                          <button
+                            type="button"
+                            onMouseDown={(event) => beginColumnSelect(event, colIndex)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (suppressNextColumnClickRef.current) {
+                                suppressNextColumnClickRef.current = false;
+                                return;
+                              }
+                              selectColumn(colIndex, event.ctrlKey || event.metaKey);
+                            }}
+                            onDoubleClick={(event) => {
+                              event.stopPropagation();
+                              beginEditColumn(colIndex);
+                            }}
+                            style={{
+                              ...columnLetterButton,
+                              ...(isColumnSelected ? selectedColumnButtonStyle : {}),
+                            }}
+                            title={`${letter}열 선택`}
+                            aria-label={`${letter}열 선택`}
+                          >
+                            {letter}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleSort(column.id);
+                            }}
+                            style={{ ...subSortButton, ...zoomedStyles.subSortButton, ...(isSortColumn ? subSortButtonActive : {}) }}
+                            title={`${letter}열 정렬`}
+                            aria-label={`${letter}열 정렬`}
+                          >
+                            <SortIndicator active={isSortColumn} direction={sortDirection} />
+                          </button>
+                        </div>
+                      )}
+                    </th>
+                  );
+                })}
+              </tr>
+              <tr>
                 {/* eslint-disable-next-line react-hooks/refs */}
                 {gridColumns.map((column, headerColIndex) =>
                   column.kind === "meta" || column.kind === "custom" ? (() => {
-                    const isColumnSelected = selectionMode === "column" && selectedColumnIdSet.has(column.id);
-                    const isSearchColumn =
-                      effectiveColumnSearchId === column.id &&
-                      (isColumnSelected || isFullColumnSelected(selectionMode === "cell" ? selection : null, headerColIndex, displayRows.length));
                     const isSortColumn = sortColumnId === column.id;
                     const isEditingCustomColumn = column.kind === "custom" && editingCustomColumnId === column.customColumnId;
                     const canReorderColumn = isReorderableColumn(column);
@@ -2521,9 +3038,8 @@ export default function StudentLessonSpreadsheet({
                         onClick={(event) => {
                           if (suppressNextColumnClickRef.current) {
                             suppressNextColumnClickRef.current = false;
-                            return;
                           }
-                          selectColumn(headerColIndex, event.ctrlKey || event.metaKey);
+                          event.stopPropagation();
                         }}
                         onDoubleClick={() => {
                           if (column.kind === "custom") beginEditCustomColumn(column);
@@ -2533,17 +3049,17 @@ export default function StudentLessonSpreadsheet({
                           ...sheetTh,
                           ...zoomedStyles.sheetTh,
                           ...stickyTop,
+                          top: zoomDimension(columnLetterHeaderHeight, sheetZoomFactor),
                           minWidth: zoomDimension(column.width, sheetZoomFactor),
                           width: zoomDimension(column.width, sheetZoomFactor),
-                          cursor: "pointer",
-                          ...(isColumnSelected ? selectedColumnHeaderStyle : {}),
+                          cursor: "default",
                           ...(isColumnDragSource ? columnDragSourceTh : {}),
                           ...(isColumnDropTarget ? columnDropTargetTh : {}),
                         }}
                         title={canReorderColumn ? `${column.label} 열 선택 / 드래그로 열 위치 교환` : `${column.label} 열 선택`}
                       >
                         <div style={{ ...metaHeaderInner, ...zoomedStyles.metaHeaderInner }}>
-                          {canReorderColumn && !isEditingCustomColumn ? (
+                          {false && canReorderColumn && !isEditingCustomColumn ? (
                             <button
                               type="button"
                               data-column-drag-handle="true"
@@ -2581,21 +3097,14 @@ export default function StudentLessonSpreadsheet({
                           )}
                           <button
                             type="button"
-                            onMouseDown={(event) => beginColumnSelect(event, headerColIndex)}
+                            onMouseDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               event.stopPropagation();
-                              if (suppressNextColumnClickRef.current) {
-                                suppressNextColumnClickRef.current = false;
-                                return;
-                              }
-                              selectColumn(headerColIndex, event.ctrlKey || event.metaKey);
                             }}
                             style={{
                               ...metaHeaderButton,
                               ...zoomedStyles.metaHeaderButton,
-                              cursor: "pointer",
-                              ...(isColumnSelected ? selectedColumnButtonStyle : {}),
-                              ...(isSearchColumn ? subHeaderButtonActive : {}),
+                              cursor: "default",
                               ...(isEditingCustomColumn ? hiddenHeaderButton : {}),
                             }}
                             title={`${column.label} 열 검색`}
@@ -2606,9 +3115,8 @@ export default function StudentLessonSpreadsheet({
                             type="button"
                             onClick={(event) => {
                               event.stopPropagation();
-                              toggleSort(column.id);
                             }}
-                            style={{ ...subSortButton, ...zoomedStyles.subSortButton, ...(isSortColumn ? subSortButtonActive : {}) }}
+                            style={{ ...subSortButton, ...zoomedStyles.subSortButton, ...(isSortColumn ? subSortButtonActive : {}), display: "none" }}
                             title={`${column.label} 정렬`}
                             aria-label={`${column.label} 정렬`}
                           >
@@ -2619,10 +3127,20 @@ export default function StudentLessonSpreadsheet({
                     );
                   })() : null
                 )}
-                {visibleLessons.map((lesson) => {
+                {renderedVisibleLessons.map((lesson) => {
                   const label = lessonDisplayLabel(lesson, lessonLabels);
                   return (
-                    <th key={lesson.id} colSpan={lessonColumnsByLessonId.get(lesson.id)?.length ?? 1} style={{ ...lessonGroupTh, ...zoomedStyles.lessonGroupTh, ...stickyTop }}>
+                    <th
+                      key={lesson.id}
+                      colSpan={lessonColumnsByLessonId.get(lesson.id)?.length ?? 1}
+                      onContextMenu={(event) => openContextMenu(event, undefined, undefined, lesson.id)}
+                      style={{
+                        ...lessonGroupTh,
+                        ...zoomedStyles.lessonGroupTh,
+                        ...stickyTop,
+                        top: zoomDimension(columnLetterHeaderHeight, sheetZoomFactor),
+                      }}
+                    >
                       <div style={{ ...lessonHeaderTop, ...zoomedStyles.lessonHeaderTop }}>
                         <input
                           value={label}
@@ -2630,12 +3148,6 @@ export default function StudentLessonSpreadsheet({
                           style={{ ...lessonNameInput, ...zoomedStyles.lessonNameInput }}
                           aria-label={`${lesson.defaultLabel} 이름`}
                         />
-                        <button type="button" onClick={() => insertLessonAfter(lesson.id)} style={{ ...insertLessonButton, ...zoomedStyles.lessonIconButton }} title="이 차시 뒤에 차시 추가">
-                          +
-                        </button>
-                        <button type="button" onClick={() => deleteLesson(lesson.id)} style={{ ...deleteLessonButton, ...zoomedStyles.lessonIconButton }} title="이 차시 삭제" disabled={lessons.length <= 1}>
-                          ×
-                        </button>
                       </div>
                       <div style={{ ...lessonDateLine, ...zoomedStyles.lessonDateLine }}>
                         <input
@@ -2687,29 +3199,34 @@ export default function StudentLessonSpreadsheet({
                 })}
               </tr>
               <tr>
-                {visibleLessons.flatMap((lesson) =>
+                {renderedVisibleLessons.flatMap((lesson) =>
                   (lessonColumnsByLessonId.get(lesson.id) ?? []).map((column) => {
                     const subColumnId = column.id;
-                    const subColIndex = gridColumns.findIndex((item) => item.id === subColumnId);
-                    const isSearchColumn =
-                      effectiveColumnSearchId === subColumnId &&
-                      isFullColumnSelected(selectionMode === "cell" ? selection : null, subColIndex, displayRows.length);
                     const isSortColumn = sortColumnId === subColumnId;
                     return (
-                      <th key={subColumnId} style={{ ...sheetSubTh, ...zoomedStyles.sheetSubTh, top: zoomDimension(lessonHeaderStickyTop, sheetZoomFactor), minWidth: zoomDimension(column.width, sheetZoomFactor), width: zoomDimension(column.width, sheetZoomFactor) }}>
+                      <th
+                        key={subColumnId}
+                        style={{
+                          ...sheetSubTh,
+                          ...zoomedStyles.sheetSubTh,
+                          top: zoomDimension(columnLetterHeaderHeight + lessonHeaderStickyTop, sheetZoomFactor),
+                          minWidth: zoomDimension(column.width, sheetZoomFactor),
+                          width: zoomDimension(column.width, sheetZoomFactor),
+                        }}
+                      >
                         <div style={{ ...subHeaderInner, ...zoomedStyles.subHeaderInner }}>
                           <button
                             type="button"
-                            onClick={() => selectColumn(subColIndex)}
-                            style={{ ...subHeaderButton, ...zoomedStyles.subHeaderButton, ...(isSearchColumn ? subHeaderButtonActive : {}) }}
+                            onClick={(event) => event.stopPropagation()}
+                            style={{ ...subHeaderButton, ...zoomedStyles.subHeaderButton, cursor: "default" }}
                             title={`${column.groupLabel} ${column.label}`}
                           >
                             {column.label}
                           </button>
                           <button
                             type="button"
-                            onClick={() => toggleSort(subColumnId)}
-                            style={{ ...subSortButton, ...zoomedStyles.subSortButton, ...(isSortColumn ? subSortButtonActive : {}) }}
+                            onClick={(event) => event.stopPropagation()}
+                            style={{ ...subSortButton, ...zoomedStyles.subSortButton, ...(isSortColumn ? subSortButtonActive : {}), display: "none" }}
                             title={`${column.groupLabel} ${column.label} 정렬`}
                             aria-label={`${column.groupLabel} ${column.label} 정렬`}
                           >
@@ -2728,13 +3245,14 @@ export default function StudentLessonSpreadsheet({
                 return (
                 <tr key={row.id} style={{ ...(isDraftStudentRow(row) ? draftRowStyle : {}), ...(isSelectedRow ? selectedRowStyle : {}) }}>
                   {gridColumns.map((column, colIndex) => {
-                    const selected = selectionMode === "cell" && isSelected(selection, rowIndex, colIndex);
+                    const cellKey = lessonCellKey(row.id, column.id);
+                    const selected = selectionMode === "cell" && (isSelected(selection, rowIndex, colIndex) || selectedCellKeySet.has(cellKey));
                     const isSelectedColumn = selectionMode === "column" && selectedColumnIdSet.has(column.id);
 
                     if (column.kind === "meta") {
                       const isRowNumberCell = column.id === "rowNumber";
                       const isNameCell = column.id === "name";
-                      const key = lessonCellKey(row.id, column.id);
+                      const key = cellKey;
                       const isClassGroupCell = column.id === "classGroup";
                       const canEditMeta = !isRowNumberCell;
                       const isDraftRow = isDraftStudentRow(row);
@@ -2811,29 +3329,38 @@ export default function StudentLessonSpreadsheet({
                               aria-label={`${displayName(row) || "신규 학생"} 학생명`}
                             />
                           ) : isEditingMeta && isClassGroupCell ? (
-                            <select
-                              ref={(node) => {
-                                metaInputRefs.current[key] = node;
-                              }}
-                              value={classGroupDraftIds[row.id] ?? row.classGroupId ?? ""}
-                              onChange={(event) => setMetaClassGroup(row, event.target.value)}
-                              onBlur={() => setEditingMetaKey(null)}
-                              onKeyDown={(event) => {
-                                if (event.key === "Escape") cancelMetaEdit(row, "classGroup");
-                              }}
-                              onClick={(event) => event.stopPropagation()}
-                              onMouseDown={(event) => event.stopPropagation()}
-                              style={{ ...metaSelectInput, ...zoomedStyles.metaSelectInput }}
-                              disabled={isPending}
-                              aria-label={`${row.name} 반`}
-                            >
-                              <option value="">미지정</option>
-                              {classGroups.map((option) => (
-                                <option key={option.id} value={option.id}>
-                                  {option.teacherName ? `${option.teacherName} / ${option.name}` : option.name}
-                                </option>
-                              ))}
-                            </select>
+                            <>
+                              <input
+                                ref={(node) => {
+                                  metaInputRefs.current[key] = node;
+                                }}
+                                value={metaDrafts[key] ?? metaCellValue(row, "classGroup")}
+                                onChange={(event) => setClassGroupTextDraft(row, event.target.value)}
+                                onBlur={() => {
+                                  finishClassGroupTextEdit(row);
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    finishClassGroupTextEdit(row);
+                                  }
+                                  if (event.key === "Escape") cancelMetaEdit(row, "classGroup");
+                                }}
+                                onClick={(event) => event.stopPropagation()}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                list="student-sheet-class-group-options"
+                                style={{ ...nameEditInput, ...zoomedStyles.nameEditInput }}
+                                autoComplete="off"
+                                disabled={isPending}
+                                aria-label={`${row.name} 반`}
+                              />
+                              <datalist id="student-sheet-class-group-options">
+                                <option value="-" />
+                                {classGroups.map((option) => (
+                                  <option key={option.id} value={option.teacherName ? `${option.teacherName} / ${option.name}` : option.name} />
+                                ))}
+                              </datalist>
+                            </>
                           ) : isEditingMeta ? (
                             <input
                               ref={(node) => {
@@ -2871,14 +3398,13 @@ export default function StudentLessonSpreadsheet({
                       );
                     }
 
-                    const key = lessonCellKey(row.id, column.id);
+                    const key = cellKey;
                     const value = getCell(row, column.id);
                     const cellLabel = column.kind === "lesson" ? `${column.groupLabel} ${column.label}` : column.label;
                     const localStyle = cellStyles[key] ?? {};
                     const isDirty = key in dirtyValues;
                     const isRangeMatch = rangeMatchKeys.has(key);
-                    const editKey = lessonCellKey(row.id, column.id);
-                    const isEditing = editingCellKey === editKey;
+                    const isEditing = editingCellKey === key;
 
                     return (
                       <td
@@ -2902,9 +3428,9 @@ export default function StudentLessonSpreadsheet({
                       >
                         {isEditing ? (
                           <input
-                            ref={(node) => {
-                              inputRefs.current[editKey] = node;
-                            }}
+                              ref={(node) => {
+                                inputRefs.current[key] = node;
+                              }}
                             value={value}
                             onChange={(event) => setCell(row, column.id, event.target.value)}
                             autoComplete="off"
@@ -2960,7 +3486,7 @@ export default function StudentLessonSpreadsheet({
           <aside style={{ ...lessonPanel, height: sheetHeight, maxHeight: sheetHeight }}>
             <div style={panelHead}>
                 <b>차시 선택</b>
-                <button type="button" onClick={() => setLessonPanelOpen(false)} style={panelButton}>닫기</button>
+                <button type="button" onClick={() => setLessonPanelOpen(false)} style={panelCloseButton} aria-label="차시 선택 닫기">×</button>
             </div>
 
             <div style={rangeButtons}>
@@ -3023,17 +3549,19 @@ export default function StudentLessonSpreadsheet({
             </div>
           </aside>
         )}
-        {testPanelOpen && selectedClassGroup ? (
+        {testPanelMode && selectedClassGroup ? (
           <TestManagementPanel
+            mode={testPanelMode}
             classGroup={selectedClassGroup}
             classTests={classTests}
             lessons={lessons}
             lessonLabels={lessonLabels}
-            onClose={() => setTestPanelOpen(false)}
+            onClose={() => setTestPanelMode(null)}
           />
         ) : null}
         {contextMenu && (
           <div
+            ref={contextMenuRef}
             style={{ ...contextMenuPanel, left: contextMenu.x, top: contextMenu.y }}
             onClick={(event) => event.stopPropagation()}
             onContextMenu={(event) => event.preventDefault()}
@@ -3100,6 +3628,45 @@ export default function StudentLessonSpreadsheet({
               <span>행 추가</span>
               <span style={contextMenuShortcut}>빈 학생 행</span>
             </button>
+            {contextLesson ? (
+              <>
+                <div style={contextMenuSeparator} />
+                <button
+                  type="button"
+                  style={contextMenuItem}
+                  onClick={() => {
+                    insertLessonBefore(contextLesson.id);
+                    setContextMenu(null);
+                  }}
+                >
+                  <span>왼쪽에 차시 추가</span>
+                  <span style={contextMenuShortcut}>추가된 차시</span>
+                </button>
+                <button
+                  type="button"
+                  style={contextMenuItem}
+                  onClick={() => {
+                    insertLessonAfter(contextLesson.id);
+                    setContextMenu(null);
+                  }}
+                >
+                  <span>오른쪽에 차시 추가</span>
+                  <span style={contextMenuShortcut}>추가된 차시</span>
+                </button>
+                <button
+                  type="button"
+                  style={{ ...contextMenuItem, ...contextMenuDangerItem, ...(lessons.length <= 1 ? disabledContextMenuItem : {}) }}
+                  onClick={() => {
+                    setContextMenu(null);
+                    deleteLesson(contextLesson.id);
+                  }}
+                  disabled={lessons.length <= 1}
+                >
+                  <span>차시 삭제</span>
+                  <span style={contextMenuShortcut}>{lessons.length <= 1 ? "삭제 불가" : "선택 차시"}</span>
+                </button>
+              </>
+            ) : null}
             <div style={contextMenuSeparator} />
             <button
               type="button"
@@ -3121,6 +3688,18 @@ export default function StudentLessonSpreadsheet({
             >
               <span>열 숨기기</span>
               <span style={contextMenuShortcut}>{hideableContextColumns.length > 0 ? `${hideableContextColumns.length}개` : "숨김 불가"}</span>
+            </button>
+            <button
+              type="button"
+              style={{ ...contextMenuItem, ...(hiddenColumnIds.length === 0 ? disabledContextMenuItem : {}) }}
+              onClick={() => {
+                setContextMenu(null);
+                showAllColumns();
+              }}
+              disabled={hiddenColumnIds.length === 0}
+            >
+              <span>열 전부 보이기</span>
+              <span style={contextMenuShortcut}>{hiddenColumnIds.length > 0 ? `${hiddenColumnIds.length}개` : "숨김 없음"}</span>
             </button>
             <button
               type="button"
@@ -3223,12 +3802,14 @@ export default function StudentLessonSpreadsheet({
   );
 }
 function TestManagementPanel({
+  mode,
   classGroup,
   classTests,
   lessons,
   lessonLabels,
   onClose,
 }: {
+  mode: "create" | "manage";
   classGroup: LessonClassGroupOption;
   classTests: ClassTestExamOption[];
   lessons: Lesson[];
@@ -3239,91 +3820,103 @@ function TestManagementPanel({
   const activeLessons = lessons.filter((lesson) => !lesson.id.startsWith("draft_"));
 
   return (
-    <aside style={testPanelOverlay} aria-label="test management">
-      <div style={testPanelHeader}>
-        <div>
-          <b>{"\uC2DC\uD5D8 \uAD00\uB9AC"}</b>
-          <div style={testPanelSubText}>{classGroup.name}</div>
+    <div
+      style={testPanelOverlay}
+      role="dialog"
+      aria-modal="true"
+      aria-label={mode === "create" ? "\uC2DC\uD5D8 \uCD94\uAC00" : "\uC2DC\uD5D8 \uAD00\uB9AC"}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <aside style={testPanelModal}>
+        <div style={testPanelHeader}>
+          <div>
+            <b>{mode === "create" ? "\uC2DC\uD5D8 \uCD94\uAC00" : "\uC2DC\uD5D8 \uAD00\uB9AC"}</b>
+            <div style={testPanelSubText}>{classGroup.name}</div>
+          </div>
+          <button type="button" onClick={onClose} style={testPanelCloseButton} aria-label="\uB2EB\uAE30">{"\u00D7"}</button>
         </div>
-        <button type="button" onClick={onClose} style={panelButton}>{"\uB2EB\uAE30"}</button>
-      </div>
 
-      <section style={testPanelSection}>
-        <b>{"\uC2DC\uD5D8 \uB4F1\uB85D"}</b>
-        <form action={createClassTestAction} style={testPanelForm}>
-          <input type="hidden" name="classGroupId" value={classGroup.id} />
-          <label style={testPanelLabel}>
-            {"\uC2DC\uD5D8\uBA85"}
-            <input name="name" required maxLength={80} style={testPanelInput} />
-          </label>
-          <label style={testPanelLabel}>
-            {"\uC2DC\uD5D8 \uC885\uB958"}
-            <select name="type" value={createType} onChange={(event) => setCreateType(event.target.value as "REGULAR" | "SINGLE")} style={testPanelInput}>
-              <option value="REGULAR">{"\uC815\uAE30 \uC2DC\uD5D8"}</option>
-              <option value="SINGLE">{"\uB2E8\uC77C \uC2DC\uD5D8"}</option>
-            </select>
-          </label>
-          <label style={testPanelLabel}>
-            {"\uC5F0\uACB0 \uCC28\uC2DC"}
-            <select name="lessonId" disabled={createType !== "SINGLE"} required={createType === "SINGLE"} style={testPanelInput}>
-              <option value="">{createType === "SINGLE" ? "\uCC28\uC2DC \uC120\uD0DD" : "\uC815\uAE30 \uC2DC\uD5D8\uC740 \uC804\uCCB4 \uCC28\uC2DC"}</option>
-              {activeLessons.map((lesson) => (
-                <option key={lesson.id} value={lesson.id}>
-                  {lessonOptionLabel(lesson, lessonLabels)}
-                </option>
+        {mode === "create" ? (
+          <section style={testPanelSection}>
+            <b>{"\uC2DC\uD5D8 \uB4F1\uB85D"}</b>
+            <form action={createClassTestAction} style={testPanelForm}>
+              <input type="hidden" name="classGroupId" value={classGroup.id} />
+              <label style={testPanelLabel}>
+                {"\uC2DC\uD5D8\uBA85"}
+                <input name="name" required maxLength={80} style={testPanelInput} />
+              </label>
+              <label style={testPanelLabel}>
+                {"\uC2DC\uD5D8 \uC885\uB958"}
+                <select name="type" value={createType} onChange={(event) => setCreateType(event.target.value as "REGULAR" | "SINGLE")} style={testPanelInput}>
+                  <option value="REGULAR">{"\uC815\uAE30 \uC2DC\uD5D8"}</option>
+                  <option value="SINGLE">{"\uB2E8\uC77C \uC2DC\uD5D8"}</option>
+                </select>
+              </label>
+              <label style={testPanelLabel}>
+                {"\uC5F0\uACB0 \uCC28\uC2DC"}
+                <select name="lessonId" disabled={createType !== "SINGLE"} required={createType === "SINGLE"} style={testPanelInput}>
+                  <option value="">{createType === "SINGLE" ? "\uCC28\uC2DC \uC120\uD0DD" : "\uC815\uAE30 \uC2DC\uD5D8\uC740 \uC804\uCCB4 \uCC28\uC2DC"}</option>
+                  {activeLessons.map((lesson) => (
+                    <option key={lesson.id} value={lesson.id}>
+                      {lessonOptionLabel(lesson, lessonLabels)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="submit" style={primaryButton}>{"\uB4F1\uB85D"}</button>
+            </form>
+          </section>
+        ) : (
+          <section style={testPanelSection}>
+            <b>{"\uB4F1\uB85D\uB41C \uC2DC\uD5D8"}</b>
+            {classTests.length === 0 ? <p style={testPanelSubText}>{"\uC544\uC9C1 \uB4F1\uB85D\uB41C \uC2DC\uD5D8\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}</p> : null}
+            <div style={testPanelList}>
+              {classTests.map((test) => (
+                <div key={test.id} style={testPanelItem}>
+                  <form action={updateClassTestAction} style={testPanelForm}>
+                    <input type="hidden" name="classGroupId" value={classGroup.id} />
+                    <input type="hidden" name="classTestId" value={test.id} />
+                    <div style={testPanelItemTop}>
+                      <span style={testTypeBadge}>{test.type === "REGULAR" ? "\uC815\uAE30" : "\uB2E8\uC77C"}</span>
+                      <span style={testPanelSubText}>{classTestPanelSummaryLabel(test, activeLessons)}</span>
+                    </div>
+                    <input name="name" defaultValue={test.name} maxLength={80} required style={testPanelInput} />
+                    <div style={testPanelInlineFields}>
+                      <select name="type" defaultValue={test.type} style={testPanelInput}>
+                        <option value="REGULAR">{"\uC815\uAE30 \uC2DC\uD5D8"}</option>
+                        <option value="SINGLE">{"\uB2E8\uC77C \uC2DC\uD5D8"}</option>
+                      </select>
+                      <select name="lessonId" defaultValue={test.classLessonId ?? lessonIdForPosition(activeLessons, test.lessonPosition) ?? ""} style={testPanelInput}>
+                        <option value="">{"\uC815\uAE30/\uBBF8\uC9C0\uC815"}</option>
+                        {activeLessons.map((lesson) => (
+                          <option key={lesson.id} value={lesson.id}>
+                            {lessonOptionLabel(lesson, lessonLabels)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <label style={testPanelCheckboxLabel}>
+                      <input type="checkbox" name="active" value="1" defaultChecked={test.active !== false} />
+                      {"\uC0AC\uC6A9"}
+                    </label>
+                    <button type="submit" style={panelButton}>{"\uC218\uC815"}</button>
+                  </form>
+                  <form action={deactivateClassTestAction}>
+                    <input type="hidden" name="classGroupId" value={classGroup.id} />
+                    <input type="hidden" name="classTestId" value={test.id} />
+                    <button type="submit" style={dangerPanelButton} onClick={(event) => { if (!window.confirm("\uC774 \uD14C\uC2A4\uD2B8\uB97C \uC0AD\uC81C\uD560\uAE4C\uC694?")) event.preventDefault(); }}>
+                      {"\uC0AD\uC81C"}
+                    </button>
+                  </form>
+                </div>
               ))}
-            </select>
-          </label>
-          <button type="submit" style={primaryButton}>{"\uB4F1\uB85D"}</button>
-        </form>
-      </section>
-
-      <section style={testPanelSection}>
-        <b>{"\uB4F1\uB85D\uB41C \uC2DC\uD5D8"}</b>
-        {classTests.length === 0 ? <p style={testPanelSubText}>{"\uC544\uC9C1 \uB4F1\uB85D\uB41C \uC2DC\uD5D8\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}</p> : null}
-        <div style={testPanelList}>
-          {classTests.map((test) => (
-            <div key={test.id} style={testPanelItem}>
-              <form action={updateClassTestAction} style={testPanelForm}>
-                <input type="hidden" name="classGroupId" value={classGroup.id} />
-                <input type="hidden" name="classTestId" value={test.id} />
-                <div style={testPanelItemTop}>
-                  <span style={testTypeBadge}>{test.type === "REGULAR" ? "\uC815\uAE30" : "\uB2E8\uC77C"}</span>
-                  <span style={testPanelSubText}>{classTestPanelSummaryLabel(test, activeLessons)}</span>
-                </div>
-                <input name="name" defaultValue={test.name} maxLength={80} required style={testPanelInput} />
-                <div style={testPanelInlineFields}>
-                  <select name="type" defaultValue={test.type} style={testPanelInput}>
-                    <option value="REGULAR">{"\uC815\uAE30 \uC2DC\uD5D8"}</option>
-                    <option value="SINGLE">{"\uB2E8\uC77C \uC2DC\uD5D8"}</option>
-                  </select>
-                  <select name="lessonId" defaultValue={test.classLessonId ?? lessonIdForPosition(activeLessons, test.lessonPosition) ?? ""} style={testPanelInput}>
-                    <option value="">{"\uC815\uAE30/\uBBF8\uC9C0\uC815"}</option>
-                    {activeLessons.map((lesson) => (
-                      <option key={lesson.id} value={lesson.id}>
-                        {lessonOptionLabel(lesson, lessonLabels)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <label style={testPanelCheckboxLabel}>
-                  <input type="checkbox" name="active" value="1" defaultChecked={test.active !== false} />
-                  {"\uC0AC\uC6A9"}
-                </label>
-                <button type="submit" style={panelButton}>{"\uC218\uC815"}</button>
-              </form>
-              <form action={deactivateClassTestAction}>
-                <input type="hidden" name="classGroupId" value={classGroup.id} />
-                <input type="hidden" name="classTestId" value={test.id} />
-                <button type="submit" style={dangerPanelButton} onClick={(event) => { if (!window.confirm("Deactivate this test?")) event.preventDefault(); }}>
-                  {"\uBE44\uD65C\uC131\uD654"}
-                </button>
-              </form>
             </div>
-          ))}
-        </div>
-      </section>
-    </aside>
+          </section>
+        )}
+      </aside>
+    </div>
   );
 }
 
@@ -3376,8 +3969,8 @@ function safeScope(value: string) {
   return value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 36) || "all";
 }
 
-function classTestMatchesLesson(test: ClassTestExamOption, lesson: Lesson) {
-  if (test.type === "REGULAR") return true;
+function classTestMatchesLesson(test: ClassTestExamOption, lesson: Lesson, labels: Record<string, string>) {
+  if (test.type === "REGULAR") return !isAddedLesson(lesson, labels);
   if (test.classLessonId && test.classLessonId === lesson.id) return true;
   if (test.lessonPosition && test.lessonPosition === lesson.index) return true;
   return test.exams.some(
@@ -3400,15 +3993,21 @@ function examForClassTestLesson(test: ClassTestExamOption, lesson: Lesson) {
 function testsForLesson(
   lesson: Lesson,
   classTests: ClassTestExamOption[],
-  selectedTest: ClassTestExamOption | null,
-  allTestsSelected: boolean
+  labels: Record<string, string>
 ) {
-  const source = allTestsSelected ? classTests : selectedTest ? [selectedTest] : classTests.length === 1 ? [classTests[0]] : [];
-  return source.filter((test) => classTestMatchesLesson(test, lesson));
+  return classTests.filter((test) => classTestMatchesLesson(test, lesson, labels));
 }
 
 function lessonTestColumnLabel(lesson: Lesson, test: ClassTestExamOption) {
   return String(lesson.index) + "\uCC28\uC2DC " + test.name;
+}
+
+function isAddedLesson(lesson: Lesson, labels: Record<string, string>) {
+  return lesson.id.startsWith("manual_") || lessonDisplayLabel(lesson, labels).trim() === addedLessonLabel;
+}
+
+function sameStringList(left: string[], right: string[]) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 function extraLessonCountKey(scope: string) {
@@ -3515,11 +4114,11 @@ function isReorderableColumn(column: GridColumn) {
 }
 
 function isColumnSelectable(column: GridColumn) {
-  return (column.kind === "meta" && column.id !== "rowNumber") || column.kind === "custom";
+  return column.kind !== "meta" || column.id !== "rowNumber";
 }
 
 function isHideableColumn(column: GridColumn) {
-  return (column.kind === "meta" && column.id !== "rowNumber" && column.id !== "name") || column.kind === "custom";
+  return (column.kind === "meta" && column.id !== "rowNumber") || column.kind === "custom" || column.kind === "lesson";
 }
 
 function uniqueColumns(columns: GridColumn[]) {
@@ -3690,12 +4289,6 @@ function isSelected(selection: SelectionRange | null, rowIndex: number, colIndex
   return rowIndex >= range.startRow && rowIndex <= range.endRow && colIndex >= range.startCol && colIndex <= range.endCol;
 }
 
-function isFullColumnSelected(selection: SelectionRange | null, colIndex: number, rowCount: number) {
-  if (!selection || rowCount <= 0 || colIndex < 0) return false;
-  const range = normalizeRange(selection);
-  return range.startCol === colIndex && range.endCol === colIndex && range.startRow === 0 && range.endRow === rowCount - 1;
-}
-
 function selectedLessonCells(selection: SelectionRange | null, rows: StudentSheetRow[], columns: GridColumn[]) {
   if (!selection) return [];
   const range = normalizeRange(selection);
@@ -3743,6 +4336,7 @@ function selectedEditableCellsForMode(
   selection: SelectionRange | null,
   selectedRowIds: Set<string>,
   selectedColumnIds: Set<string>,
+  selectedCellKeys: Set<string>,
   rows: StudentSheetRow[],
   columns: GridColumn[]
 ) {
@@ -3763,6 +4357,17 @@ function selectedEditableCellsForMode(
     rows.forEach((row, rowIndex) => {
       columns.forEach((column, colIndex) => {
         if (!selectedColumnIds.has(column.id) || !isEditableGridColumn(column)) return;
+        cells.push({ row, rowIndex, colIndex, columnId: column.id, column });
+      });
+    });
+    return cells;
+  }
+
+  if (mode === "cell" && selectedCellKeys.size > 0) {
+    const cells: ReturnType<typeof selectedEditableCells> = [];
+    rows.forEach((row, rowIndex) => {
+      columns.forEach((column, colIndex) => {
+        if (!selectedCellKeys.has(lessonCellKey(row.id, column.id)) || !isEditableGridColumn(column)) return;
         cells.push({ row, rowIndex, colIndex, columnId: column.id, column });
       });
     });
@@ -3851,6 +4456,7 @@ function selectedSheetCellsForMode(
   selection: SelectionRange | null,
   selectedRowIds: Set<string>,
   selectedColumnIds: Set<string>,
+  selectedCellKeys: Set<string>,
   rows: StudentSheetRow[],
   columns: GridColumn[]
 ) {
@@ -3870,6 +4476,17 @@ function selectedSheetCellsForMode(
     rows.forEach((row) => {
       columns.forEach((column) => {
         if (!selectedColumnIds.has(column.id)) return;
+        cells.push({ row, columnId: column.id });
+      });
+    });
+    return cells;
+  }
+
+  if (mode === "cell" && selectedCellKeys.size > 0) {
+    const cells: ReturnType<typeof selectedSheetCells> = [];
+    rows.forEach((row) => {
+      columns.forEach((column) => {
+        if (!selectedCellKeys.has(lessonCellKey(row.id, column.id))) return;
         cells.push({ row, columnId: column.id });
       });
     });
@@ -3910,6 +4527,7 @@ function selectedMatrixForMode(
   selection: SelectionRange | null,
   selectedRowIds: Set<string>,
   selectedColumnIds: Set<string>,
+  selectedCellKeys: Set<string>,
   rows: StudentSheetRow[],
   columns: GridColumn[],
   readValue: (row: StudentSheetRow, columnId: string) => string
@@ -3925,6 +4543,16 @@ function selectedMatrixForMode(
     return rows.map((row) => selectedColumns.map((column) => readValue(row, column.id)));
   }
 
+  if (mode === "cell" && selectedCellKeys.size > 0) {
+    return rows
+      .map((row) =>
+        columns
+          .filter((column) => selectedCellKeys.has(lessonCellKey(row.id, column.id)))
+          .map((column) => readValue(row, column.id))
+      )
+      .filter((line) => line.length > 0);
+  }
+
   return selectedMatrix(selection, rows, columns, readValue);
 }
 
@@ -3933,6 +4561,7 @@ function selectionStartPointForMode(
   selection: SelectionRange | null,
   selectedRowIds: Set<string>,
   selectedColumnIds: Set<string>,
+  selectedCellKeys: Set<string>,
   rows: StudentSheetRow[],
   columns: GridColumn[]
 ) {
@@ -3947,6 +4576,17 @@ function selectionStartPointForMode(
     return rows.length > 0 && colIndex >= 0 ? { rowIndex: 0, colIndex } : null;
   }
 
+  if (mode === "cell" && selectedCellKeys.size > 0) {
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex];
+      for (let colIndex = 0; colIndex < columns.length; colIndex += 1) {
+        const column = columns[colIndex];
+        if (selectedCellKeys.has(lessonCellKey(row.id, column.id))) return { rowIndex, colIndex };
+      }
+    }
+    return null;
+  }
+
   if (!selection) return null;
   const range = normalizeRange(selection);
   return { rowIndex: range.startRow, colIndex: range.startCol };
@@ -3957,6 +4597,7 @@ function buildSelectionScope(
   selection: SelectionRange | null,
   selectedRowIds: Set<string>,
   selectedColumnIds: Set<string>,
+  selectedCellKeys: Set<string>,
   rows: StudentSheetRow[],
   columns: GridColumn[]
 ) {
@@ -3975,6 +4616,17 @@ function buildSelectionScope(
     for (const row of rows) rowIds.add(row.id);
     for (const column of columns) {
       if (selectedColumnIds.has(column.id)) columnIds.add(column.id);
+    }
+    return { rowIds, columnIds };
+  }
+
+  if (mode === "cell" && selectedCellKeys.size > 0) {
+    for (const row of rows) {
+      for (const column of columns) {
+        if (!selectedCellKeys.has(lessonCellKey(row.id, column.id))) continue;
+        rowIds.add(row.id);
+        columnIds.add(column.id);
+      }
     }
     return { rowIds, columnIds };
   }
@@ -3998,6 +4650,7 @@ function formatActiveSelectionLabel(
   selection: SelectionRange | null,
   selectedRowIds: Set<string>,
   selectedColumnIds: Set<string>,
+  selectedCellKeys: Set<string>,
   rows: StudentSheetRow[],
   columns: GridColumn[]
 ) {
@@ -4011,6 +4664,7 @@ function formatActiveSelectionLabel(
     return count > 0 ? `선택된 열 ${count}개` : "선택 없음";
   }
 
+  if (mode === "cell" && selectedCellKeys.size > 0) return `선택된 셀 ${selectedCellKeys.size}개`;
   if (mode === "cell" && selection) return formatSelectionLabel(selection, rows, columns);
   return "선택 없음";
 }
@@ -4029,6 +4683,17 @@ function formatSelectionLabel(selection: SelectionRange, rows: StudentSheetRow[]
 function columnLabel(column: GridColumn) {
   if (column.kind !== "lesson") return column.label;
   return `${column.groupLabel} ${column.label}`;
+}
+
+function spreadsheetColumnLabel(index: number) {
+  let value = index + 1;
+  let label = "";
+  while (value > 0) {
+    value -= 1;
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26);
+  }
+  return label;
 }
 
 function totalTableWidth(columns: GridColumn[]) {
@@ -4072,6 +4737,14 @@ function zoomPx(value: number, factor: number, min = 1) {
 function buildSheetZoomStyles(factor: number) {
   return {
     sheetTable: { fontSize: zoomDimension(12, factor, 10) },
+    columnLetterTh: {
+      height: zoomDimension(columnLetterHeaderHeight, factor, 20),
+      padding: `0 ${zoomPx(3, factor)}`,
+    },
+    columnLetterInner: {
+      gridTemplateColumns: `${zoomPx(18, factor, 14)} minmax(0, 1fr) ${zoomPx(22, factor, 16)}`,
+      gap: zoomDimension(2, factor),
+    },
     sheetTh: {
       height: zoomDimension(54, factor, 40),
       padding: `${zoomPx(6, factor)} ${zoomPx(6, factor)}`,
@@ -4099,18 +4772,10 @@ function buildSheetZoomStyles(factor: number) {
     },
     lessonGroupTh: { height: zoomDimension(lessonHeaderStickyTop, factor, 72) },
     lessonHeaderTop: {
-      gridTemplateColumns: `1fr ${zoomPx(24, factor, 16)} ${zoomPx(24, factor, 16)}`,
-      gap: zoomDimension(4, factor),
       minHeight: zoomDimension(30, factor, 22),
       padding: `${zoomPx(4, factor)} ${zoomPx(5, factor)} ${zoomPx(2, factor)}`,
     },
     lessonNameInput: { fontSize: zoomDimension(14, factor, 10) },
-    lessonIconButton: {
-      width: zoomDimension(22, factor, 16),
-      height: zoomDimension(22, factor, 16),
-      borderRadius: zoomDimension(6, factor),
-      fontSize: zoomDimension(14, factor, 10),
-    },
     lessonDateLine: {
       gap: zoomDimension(3, factor),
       minHeight: zoomDimension(22, factor, 17),
@@ -4160,11 +4825,6 @@ function buildSheetZoomStyles(factor: number) {
     nameEditInput: {
       height: zoomDimension(22, factor, 17),
       lineHeight: `${zoomDimension(22, factor, 17)}px`,
-    },
-    metaSelectInput: {
-      height: zoomDimension(24, factor, 18),
-      lineHeight: `${zoomDimension(24, factor, 18)}px`,
-      padding: `0 ${zoomPx(3, factor)}`,
     },
     cellDisplay: {
       height: zoomDimension(29, factor, 21),
@@ -4218,6 +4878,46 @@ function styleToCss(style: CellStyle, zoomFactor = 1): CSSProperties {
     textDecoration: style.underline ? "underline" : undefined,
     outline: style.border ? "1px solid #111827" : undefined,
   };
+}
+
+function defaultSheetFormat(): CellStyle {
+  return {
+    fill: "#ffffff",
+    fontFamily: "Arial",
+    fontSize: "13",
+    align: "center",
+    bold: false,
+    italic: false,
+    underline: false,
+    border: false,
+  };
+}
+
+function normalizedSheetFormat(style?: CellStyle): CellStyle {
+  const base = defaultSheetFormat();
+  return {
+    fill: style?.fill ?? base.fill,
+    fontFamily: style?.fontFamily ?? base.fontFamily,
+    fontSize: style?.fontSize ?? base.fontSize,
+    align: style?.align ?? base.align,
+    bold: Boolean(style?.bold),
+    italic: Boolean(style?.italic),
+    underline: Boolean(style?.underline),
+    border: Boolean(style?.border),
+  };
+}
+
+function sameSheetFormat(left: CellStyle, right: CellStyle) {
+  return (
+    left.fill === right.fill &&
+    left.fontFamily === right.fontFamily &&
+    left.fontSize === right.fontSize &&
+    left.align === right.align &&
+    Boolean(left.bold) === Boolean(right.bold) &&
+    Boolean(left.italic) === Boolean(right.italic) &&
+    Boolean(left.underline) === Boolean(right.underline) &&
+    Boolean(left.border) === Boolean(right.border)
+  );
 }
 
 function ColorPaletteDropdown({
@@ -4282,21 +4982,36 @@ function ColorPaletteDropdown({
 }
 const testPanelOverlay: CSSProperties = {
   position: "fixed",
-  top: 92,
-  right: 24,
-  zIndex: 80,
-  width: 430,
+  inset: 0,
+  zIndex: 120,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 24,
+  background: "rgba(15, 23, 42, 0.34)",
+};
+const testPanelModal: CSSProperties = {
+  width: 520,
   maxWidth: "calc(100vw - 32px)",
-  maxHeight: "calc(100vh - 120px)",
+  maxHeight: "calc(100vh - 72px)",
   overflow: "auto",
   background: "#fff",
   border: "1px solid #dbe3ef",
   borderRadius: 10,
-  boxShadow: "0 20px 60px rgba(15, 23, 42, 0.18)",
+  boxShadow: "0 24px 70px rgba(15, 23, 42, 0.24)",
   padding: 16,
 };
-
 const testPanelHeader: CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 };
+const testPanelCloseButton: CSSProperties = {
+  width: 28,
+  height: 28,
+  border: 0,
+  background: "transparent",
+  color: "#475569",
+  fontSize: 24,
+  lineHeight: "24px",
+  cursor: "pointer",
+};
 const testPanelSection: CSSProperties = { borderTop: "1px solid #e5e7eb", paddingTop: 12, marginTop: 12 };
 const testPanelForm: CSSProperties = { display: "grid", gap: 8, marginTop: 8 };
 const testPanelLabel: CSSProperties = { display: "grid", gap: 4, fontSize: 12, color: "#475569", fontWeight: 700 };
@@ -4314,11 +5029,11 @@ const shell: CSSProperties = {
   height: "100%",
   minHeight: 0,
   display: "grid",
-  gridTemplateRows: "38px minmax(0, 1fr)",
+  gridTemplateRows: "auto minmax(0, 1fr)",
   border: "1px solid #d7dce5",
   borderRadius: 8,
   background: "#ffffff",
-  overflow: "hidden",
+  overflow: "visible",
   boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)",
 };
 
@@ -4531,19 +5246,17 @@ const selectionBadge: CSSProperties = {
 };
 
 const toolbar: CSSProperties = {
-  height: 38,
   minHeight: 38,
-  maxHeight: 38,
   display: "flex",
   alignItems: "center",
   gap: 4,
-  flexWrap: "nowrap",
-  overflowX: "auto",
+  flexWrap: "wrap",
+  overflowX: "visible",
   overflowY: "visible",
   padding: "4px 8px",
   borderBottom: "1px solid #dfe3eb",
   background: "#f1f3f4",
-  scrollbarWidth: "thin",
+  scrollbarWidth: "none",
 };
 
 const toolbarGroup: CSSProperties = {
@@ -4596,7 +5309,7 @@ const toolbarButton: CSSProperties = {
   alignItems: "center",
   justifyContent: "center",
   padding: "0 8px",
-  border: "1px solid transparent",
+  border: 0,
   borderRadius: 4,
   background: "transparent",
   color: "#3c4043",
@@ -4613,7 +5326,7 @@ const toolbarIconButton: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
-  border: "1px solid transparent",
+  border: 0,
   borderRadius: 4,
   background: "transparent",
   color: "#3c4043",
@@ -4796,7 +5509,7 @@ const colorTrigger: CSSProperties = {
   alignItems: "center",
   gap: 6,
   padding: "0 8px",
-  border: "1px solid transparent",
+  border: 0,
   borderRadius: 4,
   background: "transparent",
   color: "#3c4043",
@@ -4873,7 +5586,7 @@ function formatButton(active?: boolean): CSSProperties {
     minWidth: 28,
     padding: "0 7px",
     background: active ? "#dfe8fd" : "transparent",
-    border: "1px solid transparent",
+    border: 0,
     color: active ? "#174ea6" : "#3c4043",
     fontWeight: 850,
   };
@@ -4940,6 +5653,17 @@ const panelButton: CSSProperties = {
   color: "#111827",
   fontSize: 12,
   fontWeight: 800,
+  cursor: "pointer",
+};
+
+const panelCloseButton: CSSProperties = {
+  width: 28,
+  height: 28,
+  border: 0,
+  background: "transparent",
+  color: "#111827",
+  fontSize: 22,
+  lineHeight: 1,
   cursor: "pointer",
 };
 
@@ -5138,6 +5862,68 @@ const stickyTop: CSSProperties = {
 };
 
 const lessonHeaderStickyTop = 98;
+const columnLetterHeaderHeight = 24;
+
+const columnLetterTh: CSSProperties = {
+  position: "sticky",
+  top: 0,
+  zIndex: 7,
+  height: columnLetterHeaderHeight,
+  padding: "0 3px",
+  borderRight: "1px solid #dfe3eb",
+  borderBottom: "1px solid #cfd8e3",
+  background: "#f8fafc",
+  color: "#202124",
+  fontWeight: 800,
+  textAlign: "center",
+  verticalAlign: "middle",
+  cursor: "pointer",
+};
+
+const columnLetterInner: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "18px minmax(0, 1fr) 22px",
+  alignItems: "center",
+  gap: 2,
+  minWidth: 0,
+};
+
+const columnLetterButton: CSSProperties = {
+  minWidth: 0,
+  width: "100%",
+  height: 20,
+  padding: 0,
+  border: 0,
+  borderRadius: 4,
+  background: "transparent",
+  color: "#202124",
+  fontSize: 12,
+  fontWeight: 850,
+  cursor: "pointer",
+};
+
+const columnLetterActionButton: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 18,
+  height: 20,
+  padding: 0,
+  border: 0,
+  borderRadius: 4,
+  background: "transparent",
+  color: "#94a3b8",
+  fontSize: 10,
+  fontWeight: 900,
+  lineHeight: 1,
+  cursor: "grab",
+};
+
+const columnLetterActionSpacer: CSSProperties = {
+  width: 18,
+  height: 20,
+  display: "inline-block",
+};
 
 const sheetTh: CSSProperties = {
   height: 54,
@@ -5270,12 +6056,6 @@ const subHeaderButton: CSSProperties = {
   cursor: "pointer",
 };
 
-const subHeaderButtonActive: CSSProperties = {
-  border: "1px solid transparent",
-  background: "#e8f0fe",
-  color: "#174ea6",
-};
-
 const sortIconStack: CSSProperties = {
   display: "inline-flex",
   flexDirection: "column",
@@ -5309,6 +6089,7 @@ const subSortButton: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
+  appearance: "none",
   width: 22,
   height: 22,
   padding: 0,
@@ -5324,15 +6105,13 @@ const subSortButton: CSSProperties = {
 
 const subSortButtonActive: CSSProperties = {
   border: "1px solid transparent",
-  background: "#dfe8fd",
+  background: "transparent",
   color: "#174ea6",
 };
 
 const lessonHeaderTop: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "1fr 24px 24px",
   alignItems: "center",
-  gap: 4,
   minHeight: 30,
   padding: "4px 5px 2px",
 };
@@ -5347,32 +6126,6 @@ const lessonNameInput: CSSProperties = {
   fontWeight: 900,
   textAlign: "center",
   userSelect: "text",
-};
-
-const insertLessonButton: CSSProperties = {
-  width: 22,
-  height: 22,
-  border: "1px solid #93c5fd",
-  borderRadius: 6,
-  background: "#e8f0fe",
-  color: "#083891",
-  fontSize: 14,
-  fontWeight: 950,
-  lineHeight: "18px",
-  cursor: "pointer",
-};
-
-const deleteLessonButton: CSSProperties = {
-  width: 22,
-  height: 22,
-  border: "1px solid #fecaca",
-  borderRadius: 6,
-  background: "#fff1f2",
-  color: "#be123c",
-  fontSize: 16,
-  fontWeight: 950,
-  lineHeight: "18px",
-  cursor: "pointer",
 };
 
 const lessonDateLine: CSSProperties = {
@@ -5546,13 +6299,6 @@ const nameEditInput: CSSProperties = {
   background: "transparent",
 };
 
-const metaSelectInput: CSSProperties = {
-  ...nameEditInput,
-  height: 24,
-  padding: "0 3px",
-  lineHeight: "24px",
-};
-
 const cellDisplay: CSSProperties = {
   width: "100%",
   height: 29,
@@ -5608,5 +6354,120 @@ const emptyTd: CSSProperties = {
 };
 
 const testToolbar: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "nowrap", flex: "0 0 auto" };
-const testSelect: CSSProperties = { height: 28, border: "1px solid transparent", borderRadius: 4, background: "transparent", color: "#3c4043", padding: "0 8px", fontSize: 12, fontWeight: 700, outline: "none" };
 const testMetaText: CSSProperties = { color: "#5f6368", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" };
+const testMenuWrap: CSSProperties = { position: "relative", display: "inline-flex" };
+const testMenuButton: CSSProperties = {
+  height: 28,
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  border: "1px solid transparent",
+  borderRadius: 4,
+  background: "transparent",
+  color: "#202124",
+  padding: "0 8px",
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: "pointer",
+};
+const disabledTestMenuButton: CSSProperties = { color: "#9aa0a6", cursor: "not-allowed" };
+const testMenuChevron: CSSProperties = { color: "#5f6368", fontSize: 11, lineHeight: 1 };
+const testMenuPanel: CSSProperties = {
+  position: "absolute",
+  top: 32,
+  left: 0,
+  zIndex: 80,
+  width: 210,
+  padding: "6px 0",
+  border: "1px solid #dadce0",
+  borderRadius: 4,
+  background: "#fff",
+  boxShadow: "0 8px 24px rgba(60,64,67,0.18)",
+};
+const testMenuItemWrap: CSSProperties = { position: "relative" };
+const testMenuItemButton: CSSProperties = {
+  width: "100%",
+  height: 34,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  border: 0,
+  background: "transparent",
+  color: "#202124",
+  padding: "0 12px",
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: "pointer",
+  textAlign: "left",
+};
+const testMenuArrow: CSSProperties = { color: "#5f6368", fontSize: 14, lineHeight: 1 };
+const testSubMenuPanel: CSSProperties = {
+  position: "absolute",
+  top: -6,
+  left: "calc(100% + 2px)",
+  zIndex: 81,
+  width: 150,
+  padding: "6px 0",
+  border: "1px solid #dadce0",
+  borderRadius: 4,
+  background: "#fff",
+  boxShadow: "0 8px 24px rgba(60,64,67,0.18)",
+};
+const testSubMenuButton: CSSProperties = {
+  width: "100%",
+  height: 32,
+  display: "flex",
+  alignItems: "center",
+  border: 0,
+  background: "transparent",
+  color: "#202124",
+  padding: "0 12px",
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: "pointer",
+  textAlign: "left",
+};
+const disabledTestSubMenuButton: CSSProperties = { color: "#bdc1c6", cursor: "not-allowed" };
+const testChecklistPanel: CSSProperties = {
+  position: "absolute",
+  top: -6,
+  left: "calc(100% + 2px)",
+  zIndex: 82,
+  width: 280,
+  maxHeight: 360,
+  display: "grid",
+  gap: 6,
+  padding: 8,
+  border: "1px solid #dadce0",
+  borderRadius: 4,
+  background: "#fff",
+  boxShadow: "0 8px 24px rgba(60,64,67,0.18)",
+};
+const testChecklistActions: CSSProperties = { display: "flex", gap: 6, paddingBottom: 6, borderBottom: "1px solid #edf0f3" };
+const testChecklistMiniButton: CSSProperties = {
+  height: 26,
+  border: "1px solid #d1d5db",
+  borderRadius: 4,
+  background: "#f8fafc",
+  color: "#334155",
+  padding: "0 8px",
+  fontSize: 11,
+  fontWeight: 800,
+  cursor: "pointer",
+};
+const testChecklistList: CSSProperties = { display: "grid", gap: 4, maxHeight: 300, overflow: "auto" };
+const testChecklistLabel: CSSProperties = {
+  minHeight: 32,
+  display: "grid",
+  gridTemplateColumns: "18px minmax(0, 1fr)",
+  alignItems: "center",
+  gap: 7,
+  borderRadius: 4,
+  padding: "5px 6px",
+  color: "#202124",
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: "pointer",
+};
+const testChecklistLabelChecked: CSSProperties = { background: "#e8f0fe", color: "#174ea6" };
+const testChecklistText: CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };

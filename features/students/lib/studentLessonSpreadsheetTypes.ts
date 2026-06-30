@@ -191,6 +191,7 @@ export type ContextMenuState = {
   y: number;
   rowIndex?: number;
   colIndex?: number;
+  lessonId?: string;
 };
 
 export type ColorPaletteItem = {
