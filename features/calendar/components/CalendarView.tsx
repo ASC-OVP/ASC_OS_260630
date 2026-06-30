@@ -12,12 +12,14 @@ import {
   parseClassDaysOfWeek,
 } from "@/lib/classGroups";
 import { prisma } from "@/lib/prisma";
+import { generateDueRecurringTasks } from "@/lib/recurringTasks";
 import type { TaskStatus } from "@/lib/generated/prisma";
 
 export const dynamic = "force-dynamic";
 
 export default async function CalendarPage() {
   const user = await requireUser();
+  await generateDueRecurringTasks(user, addDays(new Date(), 45));
 
   const [classGroups, tasks, classRoomRows, taskStartRows, privateMemos, eventMemos] = await Promise.all([
     prisma.classGroup.findMany({

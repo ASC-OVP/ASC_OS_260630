@@ -6,7 +6,7 @@ import { Prisma, TaskPriority, TaskStatus, TaskType } from "@/lib/generated/pris
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { recordActivity } from "@/lib/activityLog";
-import { generateDueRecurringTasks } from "@/lib/recurringTasks";
+import { composeRecurringDescription, generateDueRecurringTasks } from "@/lib/recurringTasks";
 
 const TASK_STATUSES = Object.values(TaskStatus) as TaskStatus[];
 const TASK_PRIORITIES = Object.values(TaskPriority) as TaskPriority[];
@@ -70,6 +70,74 @@ function timeValue(value?: string) {
 function dayOfMonthValue(value?: string) {
   const day = Number(value);
   return Number.isInteger(day) && day >= 1 && day <= 31 ? day : undefined;
+}
+
+function monthlyDaysValue(formData: FormData) {
+  const value = text(formData, "monthlyDays").replace(/\s+/g, "");
+  if (!value) return "";
+
+  const parts = value.split(",").filter(Boolean);
+  const normalized: string[] = [];
+  for (const part of parts) {
+    if (/^\d{1,2}$/.test(part)) {
+      const day = Number(part);
+      if (day >= 1 && day <= 31) normalized.push(String(day));
+      continue;
+    }
+    const range = part.match(/^(\d{1,2})-(\d{1,2})$/);
+    if (!range) continue;
+    const start = Number(range[1]);
+    const end = Number(range[2]);
+    if (start >= 1 && end <= 31 && start <= end) normalized.push(`${start}-${end}`);
+  }
+
+  return normalized.join(",");
+}
+
+function firstMonthlyDay(value: string) {
+  const first = value.split(",").find(Boolean);
+  if (!first) return undefined;
+  const day = Number(first.split("-")[0]);
+  return Number.isInteger(day) && day >= 1 && day <= 31 ? day : undefined;
+}
+
+function checklistLinesValue(formData: FormData) {
+  return text(formData, "checklist")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-\d.\s]+/, "").trim())
+    .filter(Boolean);
+}
+
+async function syncFutureRecurringTaskChecklist(recurringTaskId: string, academyId: string, checklistLines: string[]) {
+  const today = toYmd(new Date());
+  const tasks = await prisma.task.findMany({
+    where: {
+      recurringTaskId,
+      academyId,
+      status: { not: TaskStatus.DONE },
+      scheduledDate: { gte: today },
+    },
+    select: { id: true },
+  });
+  const taskIds = tasks.map((task) => task.id);
+  if (taskIds.length === 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.taskChecklistItem.deleteMany({
+      where: { taskId: { in: taskIds } },
+    });
+    if (checklistLines.length === 0) return;
+
+    await tx.taskChecklistItem.createMany({
+      data: taskIds.flatMap((taskId) =>
+        checklistLines.map((title, order) => ({
+          taskId,
+          title,
+          order,
+        }))
+      ),
+    });
+  });
 }
 
 function daysOfWeekValue(formData: FormData) {
@@ -200,10 +268,7 @@ export async function createTaskAction(formData: FormData) {
   const type = enumValue(optionalText(formData, "type"), TASK_TYPES, TaskType.OTHER);
   const priority = enumValue(optionalText(formData, "priority"), TASK_PRIORITIES, TaskPriority.NORMAL);
   const color = sanitizeColor(optionalText(formData, "color"));
-  const checklistLines = text(formData, "checklist")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^[-\d.\s]+/, "").trim())
-    .filter(Boolean);
+  const checklistLines = checklistLinesValue(formData);
 
   if (!title || assigneeIds.length === 0) {
     redirect("/tasks/new?error=empty");
@@ -292,7 +357,7 @@ export async function createTaskAction(formData: FormData) {
 
 export async function createRecurringTaskAction(formData: FormData) {
   const user = await requireUser();
-  if (!canCreateTask(user.role)) redirect("/tasks?tab=recurring&error=permission");
+  if (!canCreateTask(user.role)) redirect("/tasks?manage=recurring&error=permission");
 
   const title = text(formData, "title");
   const assigneeId = text(formData, "assigneeId");
@@ -306,10 +371,12 @@ export async function createRecurringTaskAction(formData: FormData) {
   const dueTime = timeValue(optionalText(formData, "dueTime"));
   const dayOfMonth = dayOfMonthValue(optionalText(formData, "dayOfMonth"));
   const daysOfWeek = daysOfWeekValue(formData);
+  const monthlyDays = monthlyDaysValue(formData);
+  const checklistLines = checklistLinesValue(formData);
   const isActive = formData.get("isActive") !== "off";
 
   if (!title || !assigneeId || !startDate) {
-    redirect("/tasks?tab=recurring&newRecurring=1&error=empty");
+    redirect("/tasks?manage=recurring&newRecurring=1&error=empty");
   }
 
   const [assignee, student, classGroup] = await Promise.all([
@@ -318,13 +385,13 @@ export async function createRecurringTaskAction(formData: FormData) {
     classGroupId ? prisma.classGroup.findFirst({ where: { id: classGroupId, academyId: user.academyId }, select: { id: true } }) : null,
   ]);
 
-  if (!assignee) redirect("/tasks?tab=recurring&newRecurring=1&error=empty");
+  if (!assignee) redirect("/tasks?manage=recurring&newRecurring=1&error=empty");
 
   const recurringTask = await prisma.recurringTask.create({
     data: {
       academyId: user.academyId,
       title,
-      description: optionalText(formData, "description"),
+      description: composeRecurringDescription(optionalText(formData, "description"), checklistLines),
       type,
       assigneeId,
       creatorId: user.id,
@@ -332,8 +399,8 @@ export async function createRecurringTaskAction(formData: FormData) {
       classGroupId: classGroup?.id,
       priority,
       recurrenceType,
-      daysOfWeek: recurrenceType === "WEEKLY" ? daysOfWeek || null : null,
-      dayOfMonth: recurrenceType === "MONTHLY" ? dayOfMonth ?? Number(startDate.slice(-2)) : null,
+      daysOfWeek: recurrenceType === "WEEKLY" ? daysOfWeek || null : recurrenceType === "MONTHLY" ? monthlyDays || null : null,
+      dayOfMonth: recurrenceType === "MONTHLY" ? firstMonthlyDay(monthlyDays) ?? dayOfMonth ?? Number(startDate.slice(-2)) : null,
       startDate,
       endDate,
       dueTime,
@@ -354,7 +421,7 @@ export async function createRecurringTaskAction(formData: FormData) {
 
   revalidatePath("/tasks");
   revalidatePath("/calendar");
-  redirect("/tasks?tab=recurring");
+  redirect("/tasks?manage=recurring");
 }
 
 export async function updateRecurringTaskAction(formData: FormData) {
@@ -381,26 +448,30 @@ export async function updateRecurringTaskAction(formData: FormData) {
   const recurrenceType = enumValue(optionalText(formData, "recurrenceType"), RECURRENCE_TYPES, "WEEKLY");
   const daysOfWeek = daysOfWeekValue(formData);
   const dayOfMonth = dayOfMonthValue(optionalText(formData, "dayOfMonth"));
+  const monthlyDays = monthlyDaysValue(formData);
+  const checklistLines = checklistLinesValue(formData);
 
   await prisma.recurringTask.update({
     where: { id },
     data: {
       title,
-      description: optionalText(formData, "description"),
+      description: composeRecurringDescription(optionalText(formData, "description"), checklistLines),
       type: enumValue(optionalText(formData, "type"), TASK_TYPES, TaskType.OTHER),
       assigneeId,
       studentId,
       classGroupId,
       priority: enumValue(optionalText(formData, "priority"), TASK_PRIORITIES, TaskPriority.NORMAL),
       recurrenceType,
-      daysOfWeek: recurrenceType === "WEEKLY" ? daysOfWeek || null : null,
-      dayOfMonth: recurrenceType === "MONTHLY" ? dayOfMonth ?? Number(startDate.slice(-2)) : null,
+      daysOfWeek: recurrenceType === "WEEKLY" ? daysOfWeek || null : recurrenceType === "MONTHLY" ? monthlyDays || null : null,
+      dayOfMonth: recurrenceType === "MONTHLY" ? firstMonthlyDay(monthlyDays) ?? dayOfMonth ?? Number(startDate.slice(-2)) : null,
       startDate,
       endDate: dateOnlyValue(optionalText(formData, "endDate")),
       dueTime: timeValue(optionalText(formData, "dueTime")),
       isActive: formData.get("isActive") === "on",
     },
   });
+
+  await syncFutureRecurringTaskChecklist(id, user.academyId, checklistLines);
 
   await recordActivity({
     actor: user,
@@ -412,7 +483,7 @@ export async function updateRecurringTaskAction(formData: FormData) {
 
   revalidatePath("/tasks");
   revalidatePath("/calendar");
-  redirect("/tasks?tab=recurring");
+  redirect("/tasks?manage=recurring");
 }
 
 export async function toggleRecurringTaskAction(formData: FormData) {
@@ -443,7 +514,7 @@ export async function toggleRecurringTaskAction(formData: FormData) {
   });
 
   revalidatePath("/tasks");
-  redirect("/tasks?tab=recurring");
+  redirect("/tasks?manage=recurring");
 }
 
 export async function generateRecurringTasksAction() {
@@ -699,6 +770,132 @@ export async function updateTaskChecklistItemAction(formData: FormData) {
 
   revalidatePath("/tasks");
   revalidatePath(`/tasks/${taskId}`);
+}
+
+export async function updateTaskDetailsAction(formData: FormData) {
+  const user = await requireUser();
+  const taskId = text(formData, "taskId");
+  if (!taskId) return;
+
+  const task = await getTaskForUser(taskId, user);
+  if (!task) return;
+  if (user.role === "ASSISTANT" && !isAssignedToUser(task, user.id)) return;
+  if (user.role !== "ASSISTANT" && !reviewerScope(task, user)) return;
+
+  const canManageTask = user.role !== "ASSISTANT";
+  const title = text(formData, "title");
+  const type = enumValue(optionalText(formData, "type"), TASK_TYPES, task.type);
+  const priority = enumValue(optionalText(formData, "priority"), TASK_PRIORITIES, task.priority);
+  const color = sanitizeColor(optionalText(formData, "color"));
+  const startDate = parseDueDate(optionalText(formData, "startDate"));
+  const dueDate = parseDueDate(optionalText(formData, "dueDate"));
+  const studentId = cleanId(optionalText(formData, "studentId"));
+  const classGroupId = cleanId(optionalText(formData, "classGroupId"));
+  const assigneeIds = assigneeIdsValue(formData);
+  const checklistLines = checklistLinesValue(formData);
+
+  if (canManageTask && !title) return;
+
+  const [assignees, student, classGroup] = canManageTask
+    ? await Promise.all([
+        assigneeIds.length > 0
+          ? prisma.user.findMany({
+              where: {
+                id: { in: assigneeIds },
+                academyId: user.academyId,
+                isActive: true,
+                role: { in: ["ADMIN", "MANAGER", "TEACHER", "ASSISTANT"] },
+              },
+              select: { id: true },
+            })
+          : Promise.resolve([]),
+        studentId ? prisma.student.findFirst({ where: { id: studentId, academyId: user.academyId }, select: { id: true } }) : null,
+        classGroupId ? prisma.classGroup.findFirst({ where: { id: classGroupId, academyId: user.academyId }, select: { id: true } }) : null,
+      ])
+    : [[], null, null];
+  const validAssigneeIds = canManageTask ? assigneeIds.filter((id) => assignees.some((assignee) => assignee.id === id)) : [];
+
+  await prisma.$transaction(async (tx) => {
+    if (canManageTask) {
+      await tx.task.update({
+        where: { id: taskId },
+        data: {
+          title,
+          description: optionalText(formData, "description") ?? null,
+          type,
+          priority,
+          color,
+          studentId: student?.id ?? null,
+          classGroupId: classGroup?.id ?? null,
+          assigneeId: validAssigneeIds[0] ?? task.assigneeId,
+          startDate: startDate ?? null,
+          dueDate: dueDate ?? null,
+        },
+      });
+
+      if (validAssigneeIds.length > 0) {
+        const existingAssignments = await tx.taskAssignee.findMany({
+          where: { taskId, academyId: user.academyId },
+          select: { assigneeId: true, color: true },
+        });
+        const colorByAssignee = new Map(existingAssignments.map((assignment) => [assignment.assigneeId, assignment.color]));
+
+        await tx.taskAssignee.deleteMany({
+          where: { taskId, academyId: user.academyId },
+        });
+        await tx.taskAssignee.createMany({
+          data: validAssigneeIds.map((assigneeId) => ({
+            academyId: user.academyId,
+            taskId,
+            assigneeId,
+            color: colorByAssignee.get(assigneeId) ?? color ?? task.color ?? null,
+          })),
+        });
+      }
+    } else {
+      await tx.task.update({
+        where: { id: taskId },
+        data: { description: optionalText(formData, "description") ?? null },
+      });
+      if (color) {
+        await tx.taskAssignee.upsert({
+          where: { taskId_assigneeId: { taskId, assigneeId: user.id } },
+          update: { color },
+          create: {
+            academyId: user.academyId,
+            taskId,
+            assigneeId: user.id,
+            color,
+          },
+        });
+      }
+    }
+
+    await tx.taskChecklistItem.deleteMany({
+      where: { taskId },
+    });
+    if (checklistLines.length > 0) {
+      await tx.taskChecklistItem.createMany({
+        data: checklistLines.map((title, order) => ({
+          taskId,
+          title,
+          order,
+        })),
+      });
+    }
+  });
+
+  await recordActivity({
+    actor: user,
+    action: "UPDATE",
+    entityType: "Task",
+    entityId: taskId,
+    summary: `업무 기본 정보 수정: ${task.title}`,
+  });
+
+  revalidatePath("/tasks");
+  revalidatePath(`/tasks/${taskId}`);
+  revalidatePath("/calendar");
 }
 
 // 이름 다르게 import해도 깨지지 않도록 유지
