@@ -24,7 +24,8 @@ export function buildLessonsForClass(classGroup: LessonClassGroupOption | null, 
   const stored = storedLessons(classGroup);
   const storedByPosition = new Map(stored.map((lesson) => [lesson.index, lesson]));
   const storedMaxPosition = stored.length > 0 ? Math.max(...stored.map((lesson) => lesson.index)) : 0;
-  const baseCount = storedMaxPosition || scheduled.length || fallbackLessonCount;
+  const generatedBaseCount = scheduled.length || fallbackLessonCount;
+  const baseCount = Math.max(storedMaxPosition, generatedBaseCount);
   const baseLessons = scheduled.length > 0 ? scheduled.slice(0, baseCount) : fallbackLessons(baseCount, classGroup ? "manual" : "fallback");
   const totalCount = Math.min(maxGeneratedLessons, baseCount + extraCount);
   const lessons: Lesson[] = [];

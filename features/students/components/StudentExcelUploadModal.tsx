@@ -47,6 +47,32 @@ const uploadFieldOptions: Array<{ field: UploadField; label: string; width: numb
 
 const defaultUploadFields: UploadField[] = ["name", "phone", "parentPhone", "schoolName", "grade", "subject", "currentLevel", "memo"];
 const rowCountDefault = 12;
+const uploadHeaderLabels = new Set(
+  [
+    "학생명",
+    "학생 이름",
+    "이름",
+    "성명",
+    "학생 연락처",
+    "학생 전화번호",
+    "연락처",
+    "전화번호",
+    "휴대폰",
+    "보호자 연락처",
+    "보호자 전화번호",
+    "학부모 연락처",
+    "학부모 전화번호",
+    "학교",
+    "학교명",
+    "학년",
+    "과목",
+    "레벨",
+    "기본 메모",
+    "메모",
+    "반",
+    "반명",
+  ].map(normalizeHeaderCell)
+);
 
 export default function StudentExcelUploadModal({ classGroups, existingStudents, defaultClassGroupId }: Props) {
   const router = useRouter();
@@ -56,7 +82,7 @@ export default function StudentExcelUploadModal({ classGroups, existingStudents,
   const [columns, setColumns] = useState<UploadColumn[]>(() => createDefaultColumns());
   const [rows, setRows] = useState<string[][]>(() => blankRows(rowCountDefault, defaultUploadFields.length));
   const [selectedRows, setSelectedRows] = useState<Set<number>>(() => new Set());
-  const [message, setMessage] = useState("엑셀에서 복사한 학생 명단을 첫 칸에 붙여넣거나 CSV 파일을 업로드하세요.");
+  const [message, setMessage] = useState("엑셀에서 복사한 학생 명단을 첫 칸에 붙여넣거나 엑셀/CSV 파일을 업로드하세요.");
   const [result, setResult] = useState("");
   const [isPending, startTransition] = useTransition();
 
@@ -92,7 +118,7 @@ export default function StudentExcelUploadModal({ classGroups, existingStudents,
     setColumns(nextColumns);
     setRows(blankRows(rowCountDefault, nextColumns.length));
     setSelectedRows(new Set());
-    setMessage("초기화했습니다. 엑셀 데이터를 붙여넣거나 CSV 파일을 업로드하세요.");
+    setMessage("초기화했습니다. 엑셀 데이터를 붙여넣거나 엑셀/CSV 파일을 업로드하세요.");
     setResult("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -205,20 +231,23 @@ export default function StudentExcelUploadModal({ classGroups, existingStudents,
     const file = event.target.files?.[0];
     if (!file) return;
     const lowerName = file.name.toLowerCase();
-    if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
-      setMessage("현재는 CSV 업로드와 엑셀 복사/붙여넣기를 지원합니다. 엑셀 파일은 CSV로 저장하거나 표를 복사해서 붙여넣어 주세요.");
+    if (lowerName.endsWith(".xls") && !lowerName.endsWith(".xlsx")) {
+      setMessage("구형 XLS 파일은 아직 직접 읽을 수 없습니다. XLSX로 저장한 뒤 업로드하거나 표를 복사해서 붙여넣어 주세요.");
       return;
     }
-    const text = await file.text();
-    const matrix = parseCsv(text);
-    const withoutHeader = looksLikeHeader(matrix[0]) ? matrix.slice(1) : matrix;
-    const columnCount = Math.max(defaultUploadFields.length, ...withoutHeader.map((row) => row.length), 1);
-    const nextColumns = ensureUploadColumnCount(createDefaultColumns(), columnCount);
-    setColumns(nextColumns);
-    setRows(rowsFromMatrix(withoutHeader, nextColumns));
-    setSelectedRows(new Set());
-    setMessage(`${file.name} 파일을 불러왔습니다. 열 매핑과 검증 결과를 확인하세요.`);
-    setResult("");
+    try {
+      const matrix = lowerName.endsWith(".xlsx") ? await parseXlsx(file) : parseCsv(await file.text());
+      const withoutHeader = looksLikeHeader(matrix[0]) ? matrix.slice(1) : matrix;
+      const columnCount = Math.max(defaultUploadFields.length, ...withoutHeader.map((row) => row.length), 1);
+      const nextColumns = ensureUploadColumnCount(createDefaultColumns(), columnCount);
+      setColumns(nextColumns);
+      setRows(rowsFromMatrix(withoutHeader, nextColumns));
+      setSelectedRows(new Set());
+      setMessage(`${file.name} 파일을 불러왔습니다. 열 매핑과 검증 결과를 확인하세요.`);
+      setResult("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "파일을 읽지 못했습니다. XLSX 또는 CSV 파일인지 확인해 주세요.");
+    }
   }
 
   function submitStudents() {
@@ -284,7 +313,7 @@ export default function StudentExcelUploadModal({ classGroups, existingStudents,
             <header style={modalHeader}>
               <div>
                 <h2 style={modalTitle}>학생 엑셀 업로드</h2>
-                <p style={modalDesc}>기존 엑셀 명단을 붙여넣거나 CSV로 불러온 뒤, 열 매핑과 대상 반을 확인하고 등록합니다.</p>
+                <p style={modalDesc}>기존 엑셀 명단을 붙여넣거나 엑셀/CSV 파일로 불러온 뒤, 열 매핑과 대상 반을 확인하고 등록합니다.</p>
               </div>
               <button type="button" onClick={() => setOpen(false)} style={iconButton} aria-label="닫기">×</button>
             </header>
@@ -300,8 +329,8 @@ export default function StudentExcelUploadModal({ classGroups, existingStudents,
                 </select>
               </label>
               <button type="button" onClick={downloadSample} style={secondaryButton}>샘플 다운로드</button>
-              <button type="button" onClick={() => fileInputRef.current?.click()} style={secondaryButton}>CSV 파일 업로드</button>
-              <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,text/csv" onChange={handleFile} style={{ display: "none" }} />
+              <button type="button" onClick={() => fileInputRef.current?.click()} style={secondaryButton}>엑셀 파일 업로드</button>
+              <input ref={fileInputRef} type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleFile} style={{ display: "none" }} />
               <button type="button" onClick={addRow} style={secondaryButton}>행 추가</button>
               <button type="button" onClick={deleteSelectedRows} disabled={selectedRows.size === 0} style={{ ...secondaryButton, ...(selectedRows.size === 0 ? disabledButton : {}) }}>선택 행 삭제</button>
               <button type="button" onClick={resetRows} style={secondaryButton}>초기화</button>
@@ -543,10 +572,161 @@ function parseCsv(text: string) {
   return rows.filter((items) => items.some((item) => item.trim()));
 }
 
+type ZipEntry = {
+  compressedSize: number;
+  localHeaderOffset: number;
+  method: number;
+  name: string;
+};
+
+async function parseXlsx(file: File) {
+  const entries = await readZipEntries(new Uint8Array(await file.arrayBuffer()));
+  const workbookXml = await readZipText(entries, "xl/workbook.xml");
+  const workbook = parseXml(workbookXml);
+  const firstSheet = workbook.getElementsByTagName("sheet")[0];
+  const relationId = firstSheet?.getAttribute("r:id");
+  const rels = await readWorkbookRelationships(entries);
+  const worksheetPath = relationId ? resolveXlsxPath("xl", rels.get(relationId) ?? "") : "xl/worksheets/sheet1.xml";
+  const worksheetXml = await readZipText(entries, worksheetPath || "xl/worksheets/sheet1.xml");
+  const sharedStrings = entries.has("xl/sharedStrings.xml") ? parseSharedStrings(await readZipText(entries, "xl/sharedStrings.xml")) : [];
+  return parseWorksheet(worksheetXml, sharedStrings);
+}
+
+async function readWorkbookRelationships(entries: Map<string, ZipEntry & { bytes: Uint8Array }>) {
+  if (!entries.has("xl/_rels/workbook.xml.rels")) return new Map<string, string>();
+  const rels = parseXml(await readZipText(entries, "xl/_rels/workbook.xml.rels"));
+  const result = new Map<string, string>();
+  for (const rel of Array.from(rels.getElementsByTagName("Relationship"))) {
+    const id = rel.getAttribute("Id");
+    const target = rel.getAttribute("Target");
+    if (id && target) result.set(id, target);
+  }
+  return result;
+}
+
+async function readZipEntries(bytes: Uint8Array) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
+  const eocdOffset = findEndOfCentralDirectory(view);
+  const entryCount = readUint16(view, eocdOffset + 10);
+  let offset = readUint32(view, eocdOffset + 16);
+  const entries = new Map<string, ZipEntry & { bytes: Uint8Array }>();
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (readUint32(view, offset) !== 0x02014b50) throw new Error("엑셀 파일 구조를 읽지 못했습니다.");
+    const method = readUint16(view, offset + 10);
+    const compressedSize = readUint32(view, offset + 20);
+    const nameLength = readUint16(view, offset + 28);
+    const extraLength = readUint16(view, offset + 30);
+    const commentLength = readUint16(view, offset + 32);
+    const localHeaderOffset = readUint32(view, offset + 42);
+    const name = decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)).replace(/\\/g, "/");
+    const entry = { compressedSize, localHeaderOffset, method, name };
+    entries.set(name, { ...entry, bytes: await unzipEntry(bytes, view, entry) });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+async function unzipEntry(bytes: Uint8Array, view: DataView, entry: ZipEntry) {
+  const offset = entry.localHeaderOffset;
+  if (readUint32(view, offset) !== 0x04034b50) throw new Error("엑셀 파일 구조를 읽지 못했습니다.");
+  const nameLength = readUint16(view, offset + 26);
+  const extraLength = readUint16(view, offset + 28);
+  const dataStart = offset + 30 + nameLength + extraLength;
+  const compressed = bytes.slice(dataStart, dataStart + entry.compressedSize);
+  if (entry.method === 0) return compressed;
+  if (entry.method !== 8) throw new Error("지원하지 않는 엑셀 압축 형식입니다.");
+  if (!("DecompressionStream" in globalThis)) throw new Error("이 브라우저에서는 XLSX 압축 해제를 지원하지 않습니다. CSV로 저장해서 업로드해 주세요.");
+  const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw" as CompressionFormat));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function readZipText(entries: Map<string, ZipEntry & { bytes: Uint8Array }>, path: string) {
+  const entry = entries.get(path.replace(/^\/+/, ""));
+  if (!entry) throw new Error("엑셀 파일에서 첫 번째 시트를 찾지 못했습니다.");
+  return new TextDecoder("utf-8").decode(entry.bytes);
+}
+
+function parseXml(xml: string) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0) throw new Error("엑셀 파일 내용을 읽지 못했습니다.");
+  return doc;
+}
+
+function parseSharedStrings(xml: string) {
+  return Array.from(parseXml(xml).getElementsByTagName("si")).map((item) => item.textContent ?? "");
+}
+
+function parseWorksheet(xml: string, sharedStrings: string[]) {
+  const sheet = parseXml(xml);
+  const matrix: string[][] = [];
+  let maxColumns = 0;
+  for (const rowElement of Array.from(sheet.getElementsByTagName("row"))) {
+    const rowIndex = Math.max(0, Number(rowElement.getAttribute("r") ?? matrix.length + 1) - 1);
+    const row = matrix[rowIndex] ?? [];
+    for (const cellElement of Array.from(rowElement.getElementsByTagName("c"))) {
+      const cellRef = cellElement.getAttribute("r");
+      const colIndex = cellRef ? columnIndexFromCellRef(cellRef) : row.length;
+      row[colIndex] = xlsxCellText(cellElement, sharedStrings);
+    }
+    matrix[rowIndex] = row;
+    maxColumns = Math.max(maxColumns, row.length);
+  }
+  return matrix
+    .map((row) => Array.from({ length: maxColumns }, (_, index) => row[index] ?? ""))
+    .filter((row) => row.some((cell) => cell.trim()));
+}
+
+function xlsxCellText(cellElement: Element, sharedStrings: string[]) {
+  const type = cellElement.getAttribute("t");
+  if (type === "inlineStr") return cellElement.getElementsByTagName("is")[0]?.textContent?.trim() ?? "";
+  const value = cellElement.getElementsByTagName("v")[0]?.textContent ?? "";
+  if (type === "s") return sharedStrings[Number(value)] ?? "";
+  if (type === "b") return value === "1" ? "TRUE" : "FALSE";
+  return value.trim();
+}
+
+function columnIndexFromCellRef(ref: string) {
+  const letters = /^[A-Z]+/i.exec(ref)?.[0] ?? "A";
+  return [...letters.toUpperCase()].reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1;
+}
+
+function resolveXlsxPath(baseDir: string, target: string) {
+  if (!target) return "";
+  if (target.startsWith("/")) return target.slice(1);
+  const parts = `${baseDir}/${target}`.split("/");
+  const result: string[] = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") result.pop();
+    else result.push(part);
+  }
+  return result.join("/");
+}
+
+function findEndOfCentralDirectory(view: DataView) {
+  const minOffset = Math.max(0, view.byteLength - 66000);
+  for (let offset = view.byteLength - 22; offset >= minOffset; offset -= 1) {
+    if (readUint32(view, offset) === 0x06054b50) return offset;
+  }
+  throw new Error("XLSX 파일이 아니거나 손상된 파일입니다.");
+}
+
+function readUint16(view: DataView, offset: number) {
+  return view.getUint16(offset, true);
+}
+
+function readUint32(view: DataView, offset: number) {
+  return view.getUint32(offset, true);
+}
+
 function looksLikeHeader(row?: string[]) {
   if (!row) return false;
-  const joined = normalizeText(row.join(" "));
-  return uploadFieldOptions.some((column) => column.field !== "unused" && joined.includes(normalizeText(column.label)));
+  const cells = row.map(normalizeHeaderCell).filter(Boolean);
+  const matches = cells.filter((cell) => uploadHeaderLabels.has(cell)).length;
+  return matches >= 2 || (matches === 1 && cells.length === 1);
 }
 
 function csvEscape(value: string) {
@@ -566,13 +746,17 @@ function normalizeText(value: string) {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
+function normalizeHeaderCell(value: string) {
+  return value.trim().replace(/[\s:_\-(){}\[\]<>]/g, "").toLocaleLowerCase();
+}
+
 const uploadButton: CSSProperties = { height: 30, display: "inline-flex", alignItems: "center", border: "1px solid var(--asc-primary)", background: "var(--asc-primary-soft)", color: "var(--asc-primary-hover)", borderRadius: "var(--asc-radius-md)", padding: "0 11px", fontSize: 13, fontWeight: 900, whiteSpace: "nowrap", cursor: "pointer" };
 const overlay: CSSProperties = { position: "fixed", inset: 0, zIndex: 80, background: "rgba(15,23,42,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 };
 const modal: CSSProperties = { width: "min(1360px, 96vw)", maxHeight: "92vh", background: "var(--asc-surface)", border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-xl)", boxShadow: "var(--asc-shadow-modal)", display: "grid", gridTemplateRows: "auto auto auto minmax(320px, 1fr) auto", overflow: "hidden" };
 const modalHeader: CSSProperties = { display: "flex", justifyContent: "space-between", gap: 16, padding: "16px 18px 10px", borderBottom: "1px solid var(--asc-border)" };
 const modalTitle: CSSProperties = { margin: 0, fontSize: 22, fontWeight: 950, color: "var(--asc-text)" };
 const modalDesc: CSSProperties = { margin: "6px 0 0", color: "var(--asc-text-muted)", fontSize: 13, fontWeight: 700 };
-const iconButton: CSSProperties = { width: 32, height: 32, border: "1px solid var(--asc-border)", borderRadius: "var(--asc-radius-lg)", background: "var(--asc-bg)", fontSize: 22, cursor: "pointer", color: "var(--asc-text)" };
+const iconButton: CSSProperties = { width: 32, height: 32, border: 0, borderRadius: 0, background: "transparent", fontSize: 22, cursor: "pointer", color: "var(--asc-text)" };
 const toolbar: CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "10px 18px", borderBottom: "1px solid var(--asc-border)" };
 const classSelectLabel: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 8, color: "var(--asc-text)", fontSize: 13, fontWeight: 900 };
 const classSelect: CSSProperties = { height: 32, minWidth: 230, border: "1px solid var(--asc-border-strong)", borderRadius: "var(--asc-radius-lg)", background: "var(--asc-bg)", padding: "0 10px", color: "var(--asc-text)", fontSize: 13, fontWeight: 800 };
@@ -602,4 +786,3 @@ const modalFooter: CSSProperties = { display: "flex", justifyContent: "flex-end"
 const ghostButton: CSSProperties = { height: 34, border: 0, background: "transparent", color: "var(--asc-text)", padding: "0 12px", fontWeight: 900, cursor: "pointer" };
 const primaryButton: CSSProperties = { height: 34, border: "1px solid var(--asc-primary)", borderRadius: "var(--asc-radius-lg)", background: "var(--asc-primary)", color: "#fff", padding: "0 14px", fontWeight: 950, cursor: "pointer" };
 const disabledButton: CSSProperties = { opacity: 0.45, cursor: "not-allowed" };
-
